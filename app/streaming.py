@@ -9,13 +9,18 @@ def _extract_text(chunk: object) -> str | None:
     if chunk is None:
         return None
     if isinstance(chunk, str):
-        return chunk or None
+        return chunk
     if isinstance(chunk, dict):
         for key in ("delta", "content", "text", "answer"):
             value = chunk.get(key)
-            if isinstance(value, str) and value:
+            if isinstance(value, str):
                 return value
-    return str(chunk) or None
+    return str(chunk)
+
+
+def _is_state_blob(content: str | None) -> bool:
+    """Return True if content is a Perplexity internal state dict, not real text."""
+    return isinstance(content, str) and content.startswith("{'backend_uuid'")
 
 
 def _sse(data: dict) -> str:
@@ -36,7 +41,9 @@ async def chat_completions_stream(
     emitted_any = False
     async for chunk in generator:
         text = _extract_text(chunk)
-        if not text:
+        if text is None:
+            continue
+        if _is_state_blob(text):
             continue
         delta = {"content": text}
         if not emitted_any:
@@ -78,7 +85,9 @@ async def responses_stream(
     created_at = int(time.time())
     async for chunk in generator:
         text = _extract_text(chunk)
-        if not text:
+        if text is None:
+            continue
+        if _is_state_blob(text):
             continue
         full_text += text
         yield _sse(
@@ -115,4 +124,4 @@ async def responses_stream(
     yield "data: [DONE]\n\n"
 
 
-__all__ = ["chat_completions_stream", "responses_stream"]
+__all__ = ["chat_completions_stream", "responses_stream", "_is_state_blob"]

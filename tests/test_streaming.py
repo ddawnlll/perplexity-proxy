@@ -61,7 +61,7 @@ async def test_chat_completions_stream_zero_chunks_yields_stop_and_done_only():
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_stream_skips_none_and_empty_chunks():
+async def test_chat_completions_stream_keeps_empty_chunks():
     async def generator():
         yield None
         yield ""
@@ -70,9 +70,11 @@ async def test_chat_completions_stream_skips_none_and_empty_chunks():
     events = await _collect_async(chat_completions_stream(generator(), "sonar", "chatcmpl-123"))
     parsed = _parse_data_events(events)
 
-    assert len(parsed) == 2
-    assert parsed[0]["choices"][0]["delta"]["content"] == "Hello"
-    assert parsed[1]["choices"][0]["finish_reason"] == "stop"
+    assert len(parsed) == 3
+    assert parsed[0]["choices"][0]["delta"]["role"] == "assistant"
+    assert parsed[0]["choices"][0]["delta"]["content"] == ""
+    assert parsed[1]["choices"][0]["delta"]["content"] == "Hello"
+    assert parsed[2]["choices"][0]["finish_reason"] == "stop"
 
 
 @pytest.mark.asyncio
@@ -118,7 +120,7 @@ async def test_responses_stream_three_chunks_yields_deltas_done_completed_and_do
 
 
 @pytest.mark.asyncio
-async def test_responses_stream_skips_none_and_empty_chunks():
+async def test_responses_stream_keeps_empty_chunks():
     async def generator():
         yield None
         yield ""
@@ -128,9 +130,32 @@ async def test_responses_stream_skips_none_and_empty_chunks():
     parsed = _parse_data_events(events)
 
     assert parsed[0]["type"] == "response.output_text.delta"
-    assert parsed[0]["delta"] == "Hello"
-    assert parsed[1]["type"] == "response.output_text.done"
-    assert parsed[2]["type"] == "response.completed"
+    assert parsed[0]["delta"] == ""
+    assert parsed[1]["type"] == "response.output_text.delta"
+    assert parsed[1]["delta"] == "Hello"
+    assert parsed[2]["type"] == "response.output_text.done"
+    assert parsed[3]["type"] == "response.completed"
+
+
+@pytest.mark.asyncio
+async def test_state_blob_chunks_are_filtered_from_stream():
+    async def chat_generator():
+        yield {"content": "{'backend_uuid': 'abc123', 'status': 'PENDING'}"}
+        yield "hello"
+
+    chat_events = await _collect_async(chat_completions_stream(chat_generator(), "sonar", "chatcmpl-123"))
+    chat_parsed = _parse_data_events(chat_events)
+    assert chat_parsed[0]["choices"][0]["delta"]["role"] == "assistant"
+    assert chat_parsed[0]["choices"][0]["delta"]["content"] == "hello"
+
+    async def response_generator():
+        yield {"content": "{'backend_uuid': 'abc123', 'status': 'PENDING'}"}
+        yield "hello"
+
+    response_events = await _collect_async(responses_stream(response_generator(), "sonar", "resp-123"))
+    response_parsed = _parse_data_events(response_events)
+    assert response_parsed[0]["type"] == "response.output_text.delta"
+    assert response_parsed[0]["delta"] == "hello"
 
 
 @pytest.mark.asyncio
