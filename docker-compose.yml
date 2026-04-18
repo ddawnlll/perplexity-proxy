@@ -1,0 +1,12 @@
+version: "3.9"
+services:
+  perplexity-proxy:
+    build:
+      context: ..
+      dockerfile: perplexity-proxy/Dockerfile
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    command: gunicorn app.main:app -c gunicorn.conf.py
+    restart: unless-stopped

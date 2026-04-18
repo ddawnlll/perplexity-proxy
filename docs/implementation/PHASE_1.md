@@ -1,9 +1,9 @@
-# Phase 1 — perplexity-ai Library Refactor (Status: Planned)
+# Phase 1 — perplexity-ai Library Refactor (Status: Complete)
 
-**Status:** Planned
+**Status:** Complete
 **Owner:** perplexity-ai core
-**Last updated:** 2026-04-17
-**Delivery status:** Not started
+**Last updated:** 2026-04-18
+**Delivery status:** Complete
 
 ---
 
@@ -69,7 +69,7 @@ These two structures are tightly coupled but live separately — creating a sile
 
 ## 5. Workstream A — Create `perplexity/models.py`
 
-**Status:** New
+**Status:** Complete
 
 ### Problem / Goal
 
@@ -77,13 +77,13 @@ All model definitions and internal Perplexity API identifiers live inside `clien
 
 ### Implementation Tasks
 
-- [ ] Create `perplexity/models.py`
-- [ ] Define `MODEL_PREFERENCE_MAP` — full `mode → {model → internal_api_id}` dict
-- [ ] Derive `AVAILABLE_MODELS` from `MODEL_PREFERENCE_MAP` keys (do not duplicate by hand)
-- [ ] Implement `get_available_models() -> dict` — returns `AVAILABLE_MODELS`
-- [ ] Implement `list_flat_models() -> list[str]` — flattens all models; `None` entries become hyphenated mode names (e.g. `"deep research"` → `"deep-research"`)
-- [ ] Implement `resolve_preference(mode: str, model) -> str` — returns the internal Perplexity API ID; raises `ValueError` for unknown combinations
-- [ ] Export all public symbols from `perplexity/__init__.py`
+- [x] Create `perplexity/models.py`
+- [x] Define `MODEL_PREFERENCE_MAP` — full `mode → {model → internal_api_id}` dict
+- [x] Derive `AVAILABLE_MODELS` from `MODEL_PREFERENCE_MAP` keys (do not duplicate by hand)
+- [x] Implement `get_available_models() -> dict` — returns `AVAILABLE_MODELS`
+- [x] Implement `list_flat_models() -> list[str]` — flattens all models; `None` entries become hyphenated mode names (e.g. `"deep research"` → `"deep-research"`)
+- [x] Implement `resolve_preference(mode: str, model) -> str` — returns the internal Perplexity API ID; raises `ValueError` for unknown combinations
+- [x] Export all public symbols from `perplexity/__init__.py`
 
 ### Configuration / Code Reference
 
@@ -149,19 +149,19 @@ def resolve_preference(mode: str, model) -> str:
 
 ### Acceptance Criteria
 
-- [ ] `perplexity/models.py` exists and is importable as `from perplexity.models import ...`
-- [ ] `AVAILABLE_MODELS` is derived from `MODEL_PREFERENCE_MAP` — no manual duplication
-- [ ] `list_flat_models()` returns a flat `list[str]` with no `None` values
-- [ ] `resolve_preference("pro", "gpt-5.2")` returns `"gpt52"`
-- [ ] `resolve_preference("auto", None)` returns `"turbo"`
-- [ ] `resolve_preference("pro", "nonexistent")` raises `ValueError`
-- [ ] All symbols exported from `perplexity/__init__.py`
+- [x] `perplexity/models.py` exists and is importable as `from perplexity.models import ...`
+- [x] `AVAILABLE_MODELS` is derived from `MODEL_PREFERENCE_MAP` — no manual duplication
+- [x] `list_flat_models()` returns a flat `list[str]` with no `None` values
+- [x] `resolve_preference("pro", "gpt-5.2")` returns `"gpt52"`
+- [x] `resolve_preference("auto", None)` returns `"turbo"`
+- [x] `resolve_preference("pro", "nonexistent")` raises `ValueError`
+- [x] All symbols exported from `perplexity/__init__.py`
 
 ---
 
 ## 6. Workstream B — Refactor `perplexity/client.py`
 
-**Status:** New
+**Status:** Complete
 
 ### Problem / Goal
 
@@ -169,11 +169,11 @@ Replace the two hardcoded model structures in `client.py` with imports from `per
 
 ### Implementation Tasks
 
-- [ ] Add `from .models import AVAILABLE_MODELS, resolve_preference` import
-- [ ] Replace the validation `assert` dict with `AVAILABLE_MODELS[mode]` lookup
-- [ ] Replace the `model_preference` inline dict with a call to `resolve_preference(mode, model)`
-- [ ] Add `available_models(self) -> dict` method to `Client` — returns `get_available_models()`
-- [ ] Remove all now-redundant inline model dicts from the file
+- [x] Add `from .models import AVAILABLE_MODELS, resolve_preference` import
+- [x] Replace the validation `assert` dict with `AVAILABLE_MODELS[mode]` lookup
+- [x] Replace the `model_preference` inline dict with a call to `resolve_preference(mode, model)`
+- [x] Add `available_models(self) -> dict` method to `Client` — returns `get_available_models()`
+- [x] Remove all now-redundant inline model dicts from the file
 
 ### Configuration / Code Reference
 
@@ -199,17 +199,17 @@ def available_models(self) -> dict:
 
 ### Acceptance Criteria
 
-- [ ] `client.py` contains no inline model dicts
-- [ ] `Client("...").search("query", mode="pro", model="gpt-5.2")` still works correctly
-- [ ] `Client().available_models()` returns the full `AVAILABLE_MODELS` dict
-- [ ] `Client().search("query", mode="pro", model="invalid")` raises `AssertionError`
-- [ ] No change to any other `search()` parameter behavior
+- [x] `client.py` contains no inline model dicts
+- [x] `Client("...").search("query", mode="pro", model="gpt-5.2")` still works correctly
+- [x] `Client().available_models()` returns the full `AVAILABLE_MODELS` dict
+- [x] `Client().search("query", mode="pro", model="invalid")` raises `AssertionError`
+- [x] No change to any other `search()` parameter behavior
 
 ---
 
 ## 7. Workstream C — Mirror Changes in `perplexity_async/client.py`
 
-**Status:** New
+**Status:** Complete
 
 ### Problem / Goal
 
@@ -217,70 +217,70 @@ The async client is a parallel implementation of the sync client. All model-rela
 
 ### Implementation Tasks
 
-- [ ] Add `from perplexity.models import AVAILABLE_MODELS, resolve_preference, get_available_models` import
-- [ ] Replace validation assert with `AVAILABLE_MODELS[mode]` lookup
-- [ ] Replace `model_preference` inline dict with `resolve_preference(mode, model)`
-- [ ] Add `async def available_models(self) -> dict` method (or sync — match existing client style)
-- [ ] Remove all redundant inline model dicts
+- [x] Add `from perplexity.models import AVAILABLE_MODELS, resolve_preference, get_available_models` import
+- [x] Replace validation assert with `AVAILABLE_MODELS[mode]` lookup
+- [x] Replace `model_preference` inline dict with `resolve_preference(mode, model)`
+- [x] Add `async def available_models(self) -> dict` method (or sync — match existing client style)
+- [x] Remove all redundant inline model dicts
 
 ### Acceptance Criteria
 
-- [ ] `perplexity_async/client.py` contains no inline model dicts
-- [ ] Async client behavior is identical to sync client for all model/mode combinations
-- [ ] `await client.available_models()` (or `client.available_models()`) returns the correct dict
+- [x] `perplexity_async/client.py` contains no inline model dicts
+- [x] Async client behavior is identical to sync client for all model/mode combinations
+- [x] `await client.available_models()` (or `client.available_models()`) returns the correct dict
 
 ---
 
 ## 8. Workstream D — Test Coverage
 
-**Status:** New
+**Status:** Complete
 **Required before:** merging Phase 1 PR
 
 ### 8.1 Unit tests — `perplexity/models.py`
 
-- [ ] `AVAILABLE_MODELS` keys match `MODEL_PREFERENCE_MAP` keys exactly
-- [ ] `AVAILABLE_MODELS` values are lists derived from dict keys (not hardcoded)
-- [ ] `list_flat_models()` contains no `None` values
-- [ ] `list_flat_models()` maps `None` entries to hyphenated mode name strings
-- [ ] `resolve_preference("auto", None)` returns `"turbo"`
-- [ ] `resolve_preference("pro", "gpt-5.2")` returns `"gpt52"`
-- [ ] `resolve_preference("reasoning", None)` returns `"pplx_reasoning"`
-- [ ] `resolve_preference("deep research", None)` returns `"pplx_alpha"`
-- [ ] `resolve_preference("pro", "nonexistent")` raises `ValueError`
-- [ ] `resolve_preference("invalid_mode", None)` raises `ValueError`
+- [x] `AVAILABLE_MODELS` keys match `MODEL_PREFERENCE_MAP` keys exactly
+- [x] `AVAILABLE_MODELS` values are lists derived from dict keys (not hardcoded)
+- [x] `list_flat_models()` contains no `None` values
+- [x] `list_flat_models()` maps `None` entries to hyphenated mode name strings
+- [x] `resolve_preference("auto", None)` returns `"turbo"`
+- [x] `resolve_preference("pro", "gpt-5.2")` returns `"gpt52"`
+- [x] `resolve_preference("reasoning", None)` returns `"pplx_reasoning"`
+- [x] `resolve_preference("deep research", None)` returns `"pplx_alpha"`
+- [x] `resolve_preference("pro", "nonexistent")` raises `ValueError`
+- [x] `resolve_preference("invalid_mode", None)` raises `ValueError`
 
 ### 8.2 Regression tests — `client.py` behavior
 
-- [ ] `search()` with valid mode/model combination produces same `model_preference` value as before refactor
-- [ ] `search()` with invalid model raises `AssertionError` (same as before)
-- [ ] `available_models()` return value matches `AVAILABLE_MODELS`
+- [x] `search()` with valid mode/model combination produces same `model_preference` value as before refactor
+- [x] `search()` with invalid model raises `AssertionError` (same as before)
+- [x] `available_models()` return value matches `AVAILABLE_MODELS`
 
 ### 8.3 Regression tests — `perplexity_async/client.py`
 
-- [ ] Same regression tests as 8.2 applied to async client
+- [x] Same regression tests as 8.2 applied to async client
 
 ---
 
 ## 9. Workstream E — Pre-Merge Audit Checklist
 
-**Status:** New
+**Status:** Complete
 **Must complete before:** merging Phase 1 PR into main
 
 ### 9.1 API surface audit
 
-- [ ] `search()` signature is unchanged — no new required parameters
-- [ ] `create_account()` signature is unchanged
-- [ ] All previously passing tests still pass after refactor
+- [x] `search()` signature is unchanged — no new required parameters
+- [x] `create_account()` signature is unchanged
+- [x] All previously passing tests still pass after refactor
 
 ### 9.2 Import hygiene
 
-- [ ] No circular imports introduced between `models.py` and `client.py`
-- [ ] `perplexity/__init__.py` exports are additive only — no removals
+- [x] No circular imports introduced between `models.py` and `client.py`
+- [x] `perplexity/__init__.py` exports are additive only — no removals
 
 ### 9.3 Sync/async parity
 
-- [ ] Every change applied to `client.py` is also applied to `perplexity_async/client.py`
-- [ ] Both clients return identical `available_models()` output
+- [x] Every change applied to `client.py` is also applied to `perplexity_async/client.py`
+- [x] Both clients return identical `available_models()` output
 
 ---
 
@@ -311,27 +311,27 @@ Phase 1 is complete when **all** of the following are true simultaneously.
 
 - [x] `client.py` sync implementation exists and is stable
 - [x] `perplexity_async/client.py` async implementation exists and is stable
-- [ ] `perplexity/models.py` created with `MODEL_PREFERENCE_MAP`, `AVAILABLE_MODELS`, `get_available_models()`, `list_flat_models()`, `resolve_preference()`
-- [ ] No inline model dicts remain in `client.py`
-- [ ] No inline model dicts remain in `perplexity_async/client.py`
+- [x] `perplexity/models.py` created with `MODEL_PREFERENCE_MAP`, `AVAILABLE_MODELS`, `get_available_models()`, `list_flat_models()`, `resolve_preference()`
+- [x] No inline model dicts remain in `client.py`
+- [x] No inline model dicts remain in `perplexity_async/client.py`
 
 ### 11.2 Public API layer
 
-- [ ] `Client.available_models()` exposed on sync client
-- [ ] `Client.available_models()` exposed on async client
-- [ ] All new symbols exported from `perplexity/__init__.py`
+- [x] `Client.available_models()` exposed on sync client
+- [x] `Client.available_models()` exposed on async client
+- [x] All new symbols exported from `perplexity/__init__.py`
 
 ### 11.3 Test layer
 
-- [ ] All Workstream D tests implemented and passing
-- [ ] No regressions in existing test suite
-- [ ] `resolve_preference` tested for all valid combinations and known invalid inputs
+- [x] All Workstream D tests implemented and passing
+- [x] No regressions in existing test suite
+- [x] `resolve_preference` tested for all valid combinations and known invalid inputs
 
 ### 11.4 Quality layer
 
-- [ ] No circular imports
-- [ ] `mypy` passes on `perplexity/models.py`
-- [ ] Pre-merge audit checklist (Workstream E) fully completed
+- [x] No circular imports
+- [x] `mypy` passes on `perplexity/models.py`
+- [x] Pre-merge audit checklist (Workstream E) fully completed
 
 ---
 

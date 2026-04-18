@@ -1,9 +1,9 @@
-# Phase 2 — perplexity-proxy FastAPI Server (Status: Planned)
+# Phase 2 — perplexity-proxy FastAPI Server (Status: Complete)
 
-**Status:** Planned
+**Status:** Complete
 **Owner:** perplexity-proxy
 **Last updated:** 2026-04-17
-**Delivery status:** Not started
+**Delivery status:** Complete
 
 ---
 
@@ -67,14 +67,14 @@ Create the full project directory structure, configuration system, and base Fast
 
 ### Implementation Tasks
 
-- [ ] Create `perplexity-proxy/` directory with full structure as defined in README file map
-- [ ] Create `app/__init__.py`, `tests/__init__.py`
-- [ ] Implement `app/config.py` using `pydantic-settings` `BaseSettings`
-- [ ] Implement `app/main.py` — FastAPI app factory with lifespan handler
-- [ ] Create `pyproject.toml` with all dependencies
-- [ ] Create `requirements.txt` (pinned) and `requirements-dev.txt`
-- [ ] Create `.env.example` documenting all env vars
-- [ ] Create `.gitignore`
+- [x] Create `perplexity-proxy/` directory with full structure as defined in README file map
+- [x] Create `app/__init__.py`, `tests/__init__.py`
+- [x] Implement `app/config.py` using `pydantic-settings` `BaseSettings`
+- [x] Implement `app/main.py` — FastAPI app factory with lifespan handler
+- [x] Create `pyproject.toml` with all dependencies
+- [x] Create `requirements.txt` (pinned) and `requirements-dev.txt`
+- [x] Create `.env.example` documenting all env vars
+- [x] Create `.gitignore`
 
 ### Configuration / Code Reference
 
@@ -144,10 +144,10 @@ CACHE_TTL_SECONDS=300
 
 ### Acceptance Criteria
 
-- [ ] `uvicorn app.main:app` starts without errors
-- [ ] All config fields readable from `.env` file
-- [ ] `PERPLEXITY_COOKIES` parsed correctly from JSON string env var
-- [ ] Lifespan handler runs init/close without errors
+- [x] `uvicorn app.main:app` starts without errors
+- [x] All config fields readable from `.env` file
+- [x] `PERPLEXITY_COOKIES` parsed correctly from JSON string env var
+- [x] Lifespan handler runs init/close without errors
 
 ---
 
@@ -161,23 +161,23 @@ Define all request and response Pydantic schemas for both `chat/completions` and
 
 ### Implementation Tasks
 
-- [ ] Define `ChatMessage` — `role`, `content`
-- [ ] Define `ChatRequest` — `model`, `messages`, `stream`, `temperature`, `max_tokens`, `top_p` (accepted, ignored)
-- [ ] Define `ChatResponseMessage` — `role`, `content`
-- [ ] Define `ChatChoice` — `index`, `message`, `finish_reason`
-- [ ] Define `ChatResponse` — `id`, `object`, `created`, `model`, `choices`, `usage`
-- [ ] Define `StreamDelta` — `role` (optional), `content` (optional)
-- [ ] Define `StreamChoice` — `index`, `delta`, `finish_reason`
-- [ ] Define `StreamChunk` — `id`, `object`, `created`, `model`, `choices`
-- [ ] Define `ResponsesInput` — `str` or `list[ChatMessage]` (union)
-- [ ] Define `ResponsesRequest` — `model`, `input`, `instructions` (optional system prompt), `stream`, `temperature`, `max_output_tokens` (accepted, ignored)
-- [ ] Define `ResponsesOutputText` — `type: "text"`, `text: str`
-- [ ] Define `ResponsesOutputMessage` — `type: "message"`, `role: "assistant"`, `content: list[ResponsesOutputText]`
-- [ ] Define `ResponsesResponse` — `id`, `object: "response"`, `created_at`, `model`, `output: list[ResponsesOutputMessage]`, `usage`
-- [ ] Define `ResponsesStreamEvent` — SSE event format for Responses API streaming
-- [ ] Define `ModelObject` — `id`, `object: "model"`, `created`, `owned_by`
-- [ ] Define `ModelList` — `object: "list"`, `data: list[ModelObject]`
-- [ ] Define `HealthResponse` — `status`, `cache_enabled`, `authenticated`, `model_count`
+- [x] Define `ChatMessage` — `role`, `content`
+- [x] Define `ChatRequest` — `model`, `messages`, `stream`, `temperature`, `max_tokens`, `top_p` (accepted, ignored)
+- [x] Define `ChatResponseMessage` — `role`, `content`
+- [x] Define `ChatChoice` — `index`, `message`, `finish_reason`
+- [x] Define `ChatResponse` — `id`, `object`, `created`, `model`, `choices`, `usage`
+- [x] Define `StreamDelta` — `role` (optional), `content` (optional)
+- [x] Define `StreamChoice` — `index`, `delta`, `finish_reason`
+- [x] Define `StreamChunk` — `id`, `object`, `created`, `model`, `choices`
+- [x] Define `ResponsesInput` — `str` or `list[ChatMessage]` (union)
+- [x] Define `ResponsesRequest` — `model`, `input`, `instructions` (optional system prompt), `stream`, `temperature`, `max_output_tokens` (accepted, ignored)
+- [x] Define `ResponsesOutputText` — `type: "text"`, `text: str`
+- [x] Define `ResponsesOutputMessage` — `type: "message"`, `role: "assistant"`, `content: list[ResponsesOutputText]`
+- [x] Define `ResponsesResponse` — `id`, `object: "response"`, `created_at`, `model`, `output: list[ResponsesOutputMessage]`, `usage`
+- [x] Define `ResponsesStreamEvent` — SSE event format for Responses API streaming
+- [x] Define `ModelObject` — `id`, `object: "model"`, `created`, `owned_by`
+- [x] Define `ModelList` — `object: "list"`, `data: list[ModelObject]`
+- [x] Define `HealthResponse` — `status`, `cache_enabled`, `authenticated`, `model_count`
 
 ### Configuration / Code Reference
 
@@ -215,11 +215,11 @@ Define all request and response Pydantic schemas for both `chat/completions` and
 
 ### Acceptance Criteria
 
-- [ ] `ChatRequest` validates real openai-python SDK payloads without errors
-- [ ] `ResponsesRequest` accepts both string and array `input`
-- [ ] All extra fields from real clients are ignored gracefully (`model_config = ConfigDict(extra="ignore")`)
-- [ ] `ChatResponse` shape matches OpenAI SDK expectations exactly
-- [ ] `ResponsesResponse` shape matches OpenAI Responses API spec
+- [x] `ChatRequest` validates real openai-python SDK payloads without errors
+- [x] `ResponsesRequest` accepts both string and array `input`
+- [x] All extra fields from real clients are ignored gracefully (`model_config = ConfigDict(extra="ignore")`)
+- [x] `ChatResponse` shape matches OpenAI SDK expectations exactly
+- [x] `ResponsesResponse` shape matches OpenAI Responses API spec
 
 ---
 
@@ -233,13 +233,13 @@ Wrap `perplexity_async.Client` in a singleton lifecycle manager. All endpoints s
 
 ### Implementation Tasks
 
-- [ ] Define module-level `_client: perplexity_async.Client | None = None`
-- [ ] Implement `async init_client()` — instantiates client with cookies from config, called during lifespan startup
-- [ ] Implement `async close_client()` — called during lifespan shutdown
-- [ ] Implement `get_client() -> perplexity_async.Client` — returns singleton, raises `503` if not initialized
-- [ ] Implement `async search(query, mode, model, stream) -> dict | AsyncGenerator` — thin wrapper with retry logic
-- [ ] Add exponential backoff retry — 3 attempts, delays: 1s, 2s, 4s — only on `NetworkError`
-- [ ] Map library exceptions to `HTTPException`:
+- [x] Define module-level `_client: perplexity_async.Client | None = None`
+- [x] Implement `async init_client()` — instantiates client with cookies from config, called during lifespan startup
+- [x] Implement `async close_client()` — called during lifespan shutdown
+- [x] Implement `get_client() -> perplexity_async.Client` — returns singleton, raises `503` if not initialized
+- [x] Implement `async search(query, mode, model, stream) -> dict | AsyncGenerator` — thin wrapper with retry logic
+- [x] Add exponential backoff retry — 3 attempts, delays: 1s, 2s, 4s — only on `NetworkError`
+- [x] Map library exceptions to `HTTPException`:
   - `AuthenticationError` → `401`
   - `RateLimitError` → `429`
   - `NetworkError` → `503` (after retries exhausted)
@@ -301,12 +301,12 @@ async def search(query: str, mode: str, model, stream: bool = False):
 
 ### Acceptance Criteria
 
-- [ ] Single `perplexity_async.Client` instance shared across all requests within a worker
-- [ ] `init_client()` called exactly once during lifespan startup
-- [ ] `close_client()` called on shutdown without errors
-- [ ] `NetworkError` retried 3 times with backoff before returning 503
-- [ ] All library exceptions map to correct HTTP status codes
-- [ ] Proxy with empty cookies starts without errors (anonymous mode)
+- [x] Single `perplexity_async.Client` instance shared across all requests within a worker
+- [x] `init_client()` called exactly once during lifespan startup
+- [x] `close_client()` called on shutdown without errors
+- [x] `NetworkError` retried 3 times with backoff before returning 503
+- [x] All library exceptions map to correct HTTP status codes
+- [x] Proxy with empty cookies starts without errors (anonymous mode)
 
 ---
 
@@ -320,12 +320,12 @@ Build the proxy's model name → Perplexity mode/model resolution layer dynamica
 
 ### Implementation Tasks
 
-- [ ] Import `MODEL_PREFERENCE_MAP` from `perplexity.models`
-- [ ] Implement `build_model_map() -> dict[str, dict]` — generates `{proxy_name: {mode, model}}` for all entries
-- [ ] Handle `None` model keys → hyphenated mode name (e.g. `"deep research"` → `"deep-research"`)
-- [ ] Export `MODEL_MAP` as module-level constant (built once at import time)
-- [ ] Implement `resolve(model_name: str) -> tuple[str, str | None]` — returns `(mode, model)`, raises `HTTPException(400)` for unknown names
-- [ ] Implement `get_model_list() -> list[dict]` — returns list of `ModelObject`-shaped dicts for `/v1/models`
+- [x] Import `MODEL_PREFERENCE_MAP` from `perplexity.models`
+- [x] Implement `build_model_map() -> dict[str, dict]` — generates `{proxy_name: {mode, model}}` for all entries
+- [x] Handle `None` model keys → hyphenated mode name (e.g. `"deep research"` → `"deep-research"`)
+- [x] Export `MODEL_MAP` as module-level constant (built once at import time)
+- [x] Implement `resolve(model_name: str) -> tuple[str, str | None]` — returns `(mode, model)`, raises `HTTPException(400)` for unknown names
+- [x] Implement `get_model_list() -> list[dict]` — returns list of `ModelObject`-shaped dicts for `/v1/models`
 
 ### Configuration / Code Reference
 
@@ -363,13 +363,13 @@ def get_model_list() -> list[dict]:
 
 ### Acceptance Criteria
 
-- [ ] `MODEL_MAP` contains an entry for every mode/model combination in `MODEL_PREFERENCE_MAP`
-- [ ] `resolve("sonar-reasoning")` returns `("reasoning", None)`
-- [ ] `resolve("gpt-5.2")` returns `("pro", "gpt-5.2")`
-- [ ] `resolve("deep-research")` returns `("deep research", None)`
-- [ ] `resolve("unknown-model")` raises `HTTPException(400)`
-- [ ] `get_model_list()` length equals `len(MODEL_MAP)`
-- [ ] Adding a new entry to `MODEL_PREFERENCE_MAP` automatically appears in `MODEL_MAP` — no proxy changes needed
+- [x] `MODEL_MAP` contains an entry for every mode/model combination in `MODEL_PREFERENCE_MAP`
+- [x] `resolve("sonar-reasoning")` returns `("reasoning", None)`
+- [x] `resolve("gpt-5.2")` returns `("pro", "gpt-5.2")`
+- [x] `resolve("deep-research")` returns `("deep research", None)`
+- [x] `resolve("unknown-model")` raises `HTTPException(400)`
+- [x] `get_model_list()` length equals `len(MODEL_MAP)`
+- [x] Adding a new entry to `MODEL_PREFERENCE_MAP` automatically appears in `MODEL_MAP` — no proxy changes needed
 
 ---
 
@@ -383,14 +383,14 @@ Avoid redundant upstream requests for identical queries. Cache responses in memo
 
 ### Implementation Tasks
 
-- [ ] Implement `LRUCache` class with `asyncio.Lock`
-- [ ] `make_key(query: str, model_name: str) -> str` — SHA256 hash of `f"{model_name}:{query}"`
-- [ ] `async get(key: str) -> str | None` — returns cached value or `None` on miss/expiry
-- [ ] `async set(key: str, value: str)` — stores value with timestamp; evicts LRU when at max size
-- [ ] `async clear()` — wipes all entries (for testing)
-- [ ] Instantiate a module-level `cache = LRUCache(...)` using config values
-- [ ] Cache is bypassed entirely (always returns `None`) when `CACHE_ENABLED=false`
-- [ ] Streaming responses are NOT cached (cache applies to non-streaming only)
+- [x] Implement `LRUCache` class with `asyncio.Lock`
+- [x] `make_key(query: str, model_name: str) -> str` — SHA256 hash of `f"{model_name}:{query}"`
+- [x] `async get(key: str) -> str | None` — returns cached value or `None` on miss/expiry
+- [x] `async set(key: str, value: str)` — stores value with timestamp; evicts LRU when at max size
+- [x] `async clear()` — wipes all entries (for testing)
+- [x] Instantiate a module-level `cache = LRUCache(...)` using config values
+- [x] Cache is bypassed entirely (always returns `None`) when `CACHE_ENABLED=false`
+- [x] Streaming responses are NOT cached (cache applies to non-streaming only)
 
 ### Configuration / Code Reference
 
@@ -446,12 +446,12 @@ cache = LRUCache(
 
 ### Acceptance Criteria
 
-- [ ] Cache hit returns stored value without calling `search()`
-- [ ] Cache miss returns `None`
-- [ ] Entry expired after `CACHE_TTL_SECONDS` seconds
-- [ ] LRU eviction removes oldest entry when `CACHE_MAX_SIZE` is reached
-- [ ] `CACHE_ENABLED=false` always returns `None`
-- [ ] Streaming requests bypass cache entirely
+- [x] Cache hit returns stored value without calling `search()`
+- [x] Cache miss returns `None`
+- [x] Entry expired after `CACHE_TTL_SECONDS` seconds
+- [x] LRU eviction removes oldest entry when `CACHE_MAX_SIZE` is reached
+- [x] `CACHE_ENABLED=false` always returns `None`
+- [x] Streaming requests bypass cache entirely
 
 ---
 
@@ -465,16 +465,16 @@ cache = LRUCache(
 
 ### Implementation Tasks
 
-- [ ] Implement `chat_completions_stream(generator, model, req_id)` — yields OpenAI `chat.completion.chunk` SSE events
-- [ ] Implement `responses_stream(generator, model, resp_id)` — yields Responses API `response.output_text.delta` SSE events
-- [ ] Both functions yield `f"data: {json.dumps(event)}
+- [x] Implement `chat_completions_stream(generator, model, req_id)` — yields OpenAI `chat.completion.chunk` SSE events
+- [x] Implement `responses_stream(generator, model, resp_id)` — yields Responses API `response.output_text.delta` SSE events
+- [x] Both functions yield `f"data: {json.dumps(event)}
 
 "` per chunk
-- [ ] Both functions yield `"data: [DONE]
+- [x] Both functions yield `"data: [DONE]
 
 "` as the final event
-- [ ] Empty / `None` content chunks are skipped silently
-- [ ] Both functions handle generator exhaustion gracefully
+- [x] Empty / `None` content chunks are skipped silently
+- [x] Both functions handle generator exhaustion gracefully
 
 ### Configuration / Code Reference
 
@@ -505,13 +505,13 @@ cache = LRUCache(
 
 ### Acceptance Criteria
 
-- [ ] `chat_completions_stream` output is parseable by `openai.ChatCompletionChunk`
-- [ ] `responses_stream` output is parseable by opencode's Responses API client
-- [ ] Both end with `data: [DONE]
+- [x] `chat_completions_stream` output is parseable by `openai.ChatCompletionChunk`
+- [x] `responses_stream` output is parseable by opencode's Responses API client
+- [x] Both end with `data: [DONE]
 
 `
-- [ ] No `None` values in emitted `content` fields
-- [ ] Generators that yield zero chunks produce only the `[DONE]` terminator
+- [x] No `None` values in emitted `content` fields
+- [x] Generators that yield zero chunks produce only the `[DONE]` terminator
 
 ---
 
@@ -526,29 +526,29 @@ Implement all four required endpoints. Each route is a thin HTTP layer — valid
 ### Implementation Tasks
 
 #### `GET /v1/models`
-- [ ] Return `ModelList` built from `get_model_list()`
-- [ ] No authentication required
+- [x] Return `ModelList` built from `get_model_list()`
+- [x] No authentication required
 
 #### `GET /health`
-- [ ] Return `HealthResponse` with `status`, `cache_enabled`, `authenticated` (bool: cookies set), `model_count`
+- [x] Return `HealthResponse` with `status`, `cache_enabled`, `authenticated` (bool: cookies set), `model_count`
 
 #### `POST /v1/chat/completions`
-- [ ] Validate `ChatRequest`
-- [ ] Extract last `user` role message as `query`
-- [ ] Call `resolve(req.model)` to get `(mode, model)`
-- [ ] Check cache with `cache.get(key)`
-- [ ] If cache hit: return cached `ChatResponse`
-- [ ] If `stream=True`: return `StreamingResponse` from `chat_completions_stream()`
-- [ ] If `stream=False`: call `search()`, format as `ChatResponse`, cache result, return
+- [x] Validate `ChatRequest`
+- [x] Extract last `user` role message as `query`
+- [x] Call `resolve(req.model)` to get `(mode, model)`
+- [x] Check cache with `cache.get(key)`
+- [x] If cache hit: return cached `ChatResponse`
+- [x] If `stream=True`: return `StreamingResponse` from `chat_completions_stream()`
+- [x] If `stream=False`: call `search()`, format as `ChatResponse`, cache result, return
 
 #### `POST /v1/responses`
-- [ ] Validate `ResponsesRequest`
-- [ ] Extract query: if `input` is `str` use directly; if list, take last `user` message content
-- [ ] Call `resolve(req.model)` to get `(mode, model)`
-- [ ] Check cache (same key scheme as chat/completions)
-- [ ] If cache hit: return cached `ResponsesResponse`
-- [ ] If `stream=True`: return `StreamingResponse` from `responses_stream()`
-- [ ] If `stream=False`: call `search()`, format as `ResponsesResponse`, cache result, return
+- [x] Validate `ResponsesRequest`
+- [x] Extract query: if `input` is `str` use directly; if list, take last `user` message content
+- [x] Call `resolve(req.model)` to get `(mode, model)`
+- [x] Check cache (same key scheme as chat/completions)
+- [x] If cache hit: return cached `ResponsesResponse`
+- [x] If `stream=True`: return `StreamingResponse` from `responses_stream()`
+- [x] If `stream=False`: call `search()`, format as `ResponsesResponse`, cache result, return
 
 ### Configuration / Code Reference
 
@@ -570,14 +570,14 @@ async def responses(req: ResponsesRequest): ...
 
 ### Acceptance Criteria
 
-- [ ] `GET /v1/models` returns 200 with all models from `MODEL_MAP`
-- [ ] `POST /v1/chat/completions` returns valid OpenAI ChatCompletion shape
-- [ ] `POST /v1/responses` returns valid Responses API shape
-- [ ] `POST /v1/chat/completions` with `stream=true` returns `text/event-stream`
-- [ ] `POST /v1/responses` with `stream=true` returns `text/event-stream`
-- [ ] Unknown model returns `400` with list of valid models
-- [ ] Cache hit skips `search()` call (verifiable via mock)
-- [ ] `/v1/v1/responses` is NOT a registered route (no double-prefix routes)
+- [x] `GET /v1/models` returns 200 with all models from `MODEL_MAP`
+- [x] `POST /v1/chat/completions` returns valid OpenAI ChatCompletion shape
+- [x] `POST /v1/responses` returns valid Responses API shape
+- [x] `POST /v1/chat/completions` with `stream=true` returns `text/event-stream`
+- [x] `POST /v1/responses` with `stream=true` returns `text/event-stream`
+- [x] Unknown model returns `400` with list of valid models
+- [x] Cache hit skips `search()` call (verifiable via mock)
+- [x] `/v1/v1/responses` is NOT a registered route (no double-prefix routes)
 
 ---
 
@@ -591,9 +591,9 @@ Create production deployment files: Gunicorn config, Dockerfile, and docker-comp
 
 ### Implementation Tasks
 
-- [ ] Create `gunicorn.conf.py` — uvicorn worker class, `2×CPU+1` workers, 120s timeout, 5s keepalive
-- [ ] Create `Dockerfile` — `python:3.12-slim`, install local `perplexity-ai`, install proxy deps, uvicorn entrypoint
-- [ ] Create `docker-compose.yml` — proxy service with gunicorn, `.env` file mount, port 8080, `unless-stopped`
+- [x] Create `gunicorn.conf.py` — uvicorn worker class, `2×CPU+1` workers, 120s timeout, 5s keepalive
+- [x] Create `Dockerfile` — `python:3.12-slim`, install local `perplexity-ai`, install proxy deps, uvicorn entrypoint
+- [x] Create `docker-compose.yml` — proxy service with gunicorn, `.env` file mount, port 8080, `unless-stopped`
 
 ### Configuration / Code Reference
 
@@ -622,10 +622,10 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
 
 ### Acceptance Criteria
 
-- [ ] `docker-compose up -d` starts the proxy successfully
-- [ ] `curl http://localhost:8080/health` returns 200
-- [ ] `gunicorn` starts with correct worker count
-- [ ] Container restarts automatically after crash
+- [x] `docker-compose up -d` starts the proxy successfully
+- [x] `curl http://localhost:8080/health` returns 200
+- [x] `gunicorn` starts with correct worker count
+- [x] Container restarts automatically after crash
 
 ---
 
@@ -636,40 +636,40 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
 
 ### 13.1 Unit tests — `app/mapper.py`
 
-- [ ] `MODEL_MAP` contains correct entry count
-- [ ] `resolve()` returns correct `(mode, model)` pairs for known models
-- [ ] `resolve("unknown")` raises `HTTPException(400)`
-- [ ] `get_model_list()` returns list with correct `id` fields
+- [x] `MODEL_MAP` contains correct entry count
+- [x] `resolve()` returns correct `(mode, model)` pairs for known models
+- [x] `resolve("unknown")` raises `HTTPException(400)`
+- [x] `get_model_list()` returns list with correct `id` fields
 
 ### 13.2 Unit tests — `app/cache.py`
 
-- [ ] Cache hit returns stored value
-- [ ] Cache miss returns `None`
-- [ ] TTL expiry returns `None`
-- [ ] LRU eviction removes oldest on overflow
-- [ ] `CACHE_ENABLED=false` always returns `None`
+- [x] Cache hit returns stored value
+- [x] Cache miss returns `None`
+- [x] TTL expiry returns `None`
+- [x] LRU eviction removes oldest on overflow
+- [x] `CACHE_ENABLED=false` always returns `None`
 
 ### 13.3 Unit tests — `app/streaming.py`
 
-- [ ] `chat_completions_stream` yields valid delta events
-- [ ] `responses_stream` yields valid `response.output_text.delta` events
-- [ ] Both end with `data: [DONE]
+- [x] `chat_completions_stream` yields valid delta events
+- [x] `responses_stream` yields valid `response.output_text.delta` events
+- [x] Both end with `data: [DONE]
 
 `
-- [ ] Empty chunks are skipped
+- [x] Empty chunks are skipped
 
 ### 13.4 Integration tests — `app/router.py`
 
-- [ ] `GET /v1/models` → 200, correct shape
-- [ ] `POST /v1/chat/completions` → 200, `ChatResponse` shape (mock client)
-- [ ] `POST /v1/responses` → 200, `ResponsesResponse` shape (mock client)
-- [ ] `POST /v1/chat/completions` with `stream=true` → `text/event-stream`
-- [ ] `POST /v1/responses` with `stream=true` → `text/event-stream`
-- [ ] Unknown model → 400
-- [ ] `AuthenticationError` from client → 401
-- [ ] `RateLimitError` from client → 429
-- [ ] Cache hit → `search()` not called (assert mock not called)
-- [ ] `GET /health` → 200, correct fields
+- [x] `GET /v1/models` → 200, correct shape
+- [x] `POST /v1/chat/completions` → 200, `ChatResponse` shape (mock client)
+- [x] `POST /v1/responses` → 200, `ResponsesResponse` shape (mock client)
+- [x] `POST /v1/chat/completions` with `stream=true` → `text/event-stream`
+- [x] `POST /v1/responses` with `stream=true` → `text/event-stream`
+- [x] Unknown model → 400
+- [x] `AuthenticationError` from client → 401
+- [x] `RateLimitError` from client → 429
+- [x] Cache hit → `search()` not called (assert mock not called)
+- [x] `GET /health` → 200, correct fields
 
 ---
 
@@ -680,28 +680,28 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
 
 ### 14.1 Endpoint audit
 
-- [ ] `GET /v1/models` registered and returns 200
-- [ ] `POST /v1/chat/completions` registered and returns 200
-- [ ] `POST /v1/responses` registered and returns 200
-- [ ] `GET /health` registered and returns 200
-- [ ] No `/v1/v1/...` routes registered
+- [x] `GET /v1/models` registered and returns 200
+- [x] `POST /v1/chat/completions` registered and returns 200
+- [x] `POST /v1/responses` registered and returns 200
+- [x] `GET /health` registered and returns 200
+- [x] No `/v1/v1/...` routes registered
 
 ### 14.2 CLIProxyAPI config validation
 
-- [ ] `base-url` in CLIProxyAPI config set to `http://127.0.0.1:8080` (no `/v1` suffix)
-- [ ] CLIProxyAPI logs show no more `404 /v1/v1/...` errors after fix
+- [x] `base-url` in CLIProxyAPI config set to `http://127.0.0.1:8080` (no `/v1` suffix)
+- [x] CLIProxyAPI logs show no more `404 /v1/v1/...` errors after fix
 
 ### 14.3 Schema validation
 
-- [ ] Real `openai` Python SDK client can call proxy without validation errors
-- [ ] `openai.ChatCompletion.parse()` succeeds on proxy response
-- [ ] Streaming responses parseable by `openai` SDK stream iterator
+- [x] Real `openai` Python SDK client can call proxy without validation errors
+- [x] `openai.ChatCompletion.parse()` succeeds on proxy response
+- [x] Streaming responses parseable by `openai` SDK stream iterator
 
 ### 14.4 Performance baseline
 
-- [ ] Non-streaming response time < 10s for `auto` mode
-- [ ] Streaming first-token latency < 3s
-- [ ] Cache hit response time < 5ms
+- [x] Non-streaming response time < 10s for `auto` mode
+- [x] Streaming first-token latency < 3s
+- [x] Cache hit response time < 5ms
 
 ---
 
@@ -737,35 +737,35 @@ Phase 2 is complete when **all** of the following are true simultaneously.
 ### 16.1 Endpoint layer
 
 - [x] Phase 1 Definition of Done fully satisfied
-- [ ] `GET /v1/models` implemented and tested
-- [ ] `POST /v1/chat/completions` implemented and tested (streaming + non-streaming)
-- [ ] `POST /v1/responses` implemented and tested (streaming + non-streaming)
-- [ ] `GET /health` implemented and tested
+- [x] `GET /v1/models` implemented and tested
+- [x] `POST /v1/chat/completions` implemented and tested (streaming + non-streaming)
+- [x] `POST /v1/responses` implemented and tested (streaming + non-streaming)
+- [x] `GET /health` implemented and tested
 
 ### 16.2 Core layer
 
-- [ ] `perplexity_async.Client` singleton managed by lifespan
-- [ ] `MODEL_MAP` built dynamically from `perplexity.models.MODEL_PREFERENCE_MAP`
-- [ ] LRU cache operational with TTL and eviction
-- [ ] All library exceptions mapped to HTTP status codes
-- [ ] Retry logic operational for `NetworkError`
+- [x] `perplexity_async.Client` singleton managed by lifespan
+- [x] `MODEL_MAP` built dynamically from `perplexity.models.MODEL_PREFERENCE_MAP`
+- [x] LRU cache operational with TTL and eviction
+- [x] All library exceptions mapped to HTTP status codes
+- [x] Retry logic operational for `NetworkError`
 
 ### 16.3 Schema layer
 
-- [ ] `ChatResponse` passes `openai` SDK parsing
-- [ ] `ResponsesResponse` passes Responses API shape validation
-- [ ] Extra fields from real clients ignored without validation errors
+- [x] `ChatResponse` passes `openai` SDK parsing
+- [x] `ResponsesResponse` passes Responses API shape validation
+- [x] Extra fields from real clients ignored without validation errors
 
 ### 16.4 Test layer
 
-- [ ] All Workstream I tests implemented and passing
-- [ ] No regressions in Phase 1 tests
-- [ ] Pre-merge audit (Workstream J) fully completed
+- [x] All Workstream I tests implemented and passing
+- [x] No regressions in Phase 1 tests
+- [x] Pre-merge audit (Workstream J) fully completed
 
 ### 16.5 Infrastructure layer
 
-- [ ] `docker-compose up` starts proxy successfully
-- [ ] `gunicorn.conf.py` configured correctly
+- [x] `docker-compose up` starts proxy successfully
+- [x] `gunicorn.conf.py` configured correctly
 
 ---
 

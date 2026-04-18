@@ -14,6 +14,8 @@
 
 Model availability is resolved **dynamically** at startup by reading `AVAILABLE_MODELS` from the `perplexity` library itself. When the upstream library adds or removes models, the proxy reflects those changes automatically — no manual mapping maintenance required.
 
+> **CLIProxyAPI note:** set `base-url` to `http://127.0.0.1:8080` (no `/v1` suffix). CLIProxyAPI prepends `/v1` automatically.
+
 ---
 
 ## How It Works
