@@ -11,8 +11,10 @@ dependencies = [
     "uvicorn[standard]>=0.29.0",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.2.0",
+    "PyYAML>=6.0.2",
+    "click>=8.1.7",
     "gunicorn>=21.2.0",
-    "perplexity-api @ file://../perplexity-ai",
+    "perplexity-api @ file:../perplexity-ai",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +28,9 @@ dev = [
 [tool.setuptools]
 include-package-data = false
 
+[project.scripts]
+perplexity-proxy = "app.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*"]
+include = ["app*", "perplexity_proxy*"]

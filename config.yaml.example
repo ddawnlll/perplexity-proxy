@@ -1,0 +1,48 @@
+# perplexity-proxy configuration
+# All values here can be overridden by environment variables (uppercase).
+# Example: HOST in config.yaml is overridden by HOST=... in .env or shell env.
+
+# Server bind address. Use "" to bind all interfaces, "127.0.0.1" for localhost only.
+host: "0.0.0.0"
+
+# Inbound API keys for OpenAI-compatible clients.
+# Set one or more keys; requests to /v1/* must send a matching Authorization: Bearer <key> header.
+# Leave all three empty to disable inbound API-key auth.
+# Example:
+# api-key-1: "sk-proxy-1"
+# api-key-2: "sk-proxy-2"
+# api-key-3: "sk-proxy-3"
+api-key-1: ""
+api-key-2: ""
+api-key-3: ""
+
+# Server port
+port: 8080
+
+# Number of uvicorn workers
+workers: 4
+
+# Log level: debug, info, warning, error, critical
+log-level: "info"
+
+# Enable debug mode: forces workers=1, log-level=debug, enables full tracebacks
+debug: false
+
+# Perplexity session cookies (JSON string or map)
+# Recommended when using Perplexity web auth:
+# perplexity-cookies:
+#   "next-auth.csrf-token": "your-csrf-token"
+#   "next-auth.session-token": "your-session-token"
+perplexity-cookies:
+  "next-auth.csrf-token": "your-csrf-token"
+  "next-auth.session-token": "your-session-token"
+
+# Response cache settings
+cache:
+  enabled: true
+  max-size: 256
+  ttl-seconds: 300
+
+# Model refresh secret (Authorization: Bearer <value> for POST /v1/models/refresh)
+# Leave empty to disable the refresh endpoint.
+refresh-secret: ""

@@ -13,6 +13,10 @@ from app.client import get_client, search
 from app.config import settings
 from app import mapper
 from app.mapper import get_model_list, resolve
+
+
+def build_model_map():
+    return mapper.build_model_map()
 from app.models import (
     ChatChoice,
     ChatRequest,
@@ -122,6 +126,7 @@ async def health() -> HealthResponse:
         status="ok",
         cache_enabled=settings.CACHE_ENABLED,
         authenticated=bool(settings.PERPLEXITY_COOKIES),
+        api_key_auth_enabled=bool(settings.API_KEY_1 or settings.API_KEY_2 or settings.API_KEY_3),
         model_count=len(mapper.MODEL_MAP),
     )
 
@@ -141,7 +146,7 @@ async def refresh_models_endpoint(authorization: str = Header(...)):
             detail="Model refresh failed — static map still active",
         )
 
-    mapper.MODEL_MAP = mapper.build_model_map()
+    mapper.MODEL_MAP = build_model_map()
 
     return {
         "status": "ok",

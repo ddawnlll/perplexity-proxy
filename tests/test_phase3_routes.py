@@ -79,7 +79,7 @@ def test_refresh_returns_200_on_success(monkeypatch, mocker):
     mocker.patch("app.router.get_client", return_value=client_mock)
 
     updated_map = {"auto": {None: "turbo"}, "pro": {None: "pplx_pro", "gpt-5.4": "gpt54"}}
-    build_mock = mocker.patch("app.router.mapper.build_model_map", return_value=updated_map)
+    build_mock = mocker.patch("app.router.build_model_map", return_value=updated_map)
 
     with _test_client() as client:
         response = client.post("/v1/models/refresh", headers={"Authorization": "Bearer abc"})
@@ -90,6 +90,23 @@ def test_refresh_returns_200_on_success(monkeypatch, mocker):
     assert payload["model_count"] == len(updated_map)
     assert payload["models"] == list(updated_map.keys())
     build_mock.assert_called_once()
+
+
+def test_refresh_is_not_blocked_by_api_key_auth(monkeypatch, mocker):
+    monkeypatch.setattr(settings, "REFRESH_SECRET", "abc")
+    monkeypatch.setattr(settings, "API_KEY_1", "key-1")
+    monkeypatch.setattr(settings, "API_KEY_2", "")
+    monkeypatch.setattr(settings, "API_KEY_3", "")
+
+    client_mock = mocker.Mock()
+    client_mock.refresh_models = AsyncMock(return_value=True)
+    mocker.patch("app.router.get_client", return_value=client_mock)
+    mocker.patch("app.router.mapper.build_model_map", return_value={"auto": {None: "turbo"}})
+
+    with _test_client() as client:
+        response = client.post("/v1/models/refresh", headers={"Authorization": "Bearer abc"})
+
+    assert response.status_code == 200
 
 
 def test_get_models_after_refresh_returns_updated_list(monkeypatch, mocker):

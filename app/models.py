@@ -127,6 +127,7 @@ class HealthResponse(ProxyModel):
     status: str
     cache_enabled: bool
     authenticated: bool
+    api_key_auth_enabled: bool
     model_count: int
 
 

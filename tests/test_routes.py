@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.main import app
 from app.models import ChatResponse, ResponsesResponse
 from perplexity.exceptions import AuthenticationError, RateLimitError
@@ -49,8 +50,9 @@ def test_get_health_returns_expected_fields(client):
 
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload.keys()) == {"status", "cache_enabled", "authenticated", "model_count"}
+    assert set(payload.keys()) == {"status", "cache_enabled", "authenticated", "api_key_auth_enabled", "model_count"}
     assert payload["status"] == "ok"
+    assert payload["api_key_auth_enabled"] is False
 
 
 def test_chat_completions_success_returns_message_content(client, cache_mocks, search_mock):
@@ -211,3 +213,37 @@ def test_router_has_no_double_prefixed_routes():
     assert "/v1/responses" in paths
     assert "/health" in paths
     assert not any(path.startswith("/v1/v1/") for path in paths)
+
+
+def test_api_key_is_required_when_configured(client, monkeypatch):
+    monkeypatch.setattr(settings, "API_KEY_1", "key-1")
+    monkeypatch.setattr(settings, "API_KEY_2", "")
+    monkeypatch.setattr(settings, "API_KEY_3", "")
+
+    response = client.get("/v1/models")
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Missing API key"
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_api_key_allows_access_when_bearer_matches(client, monkeypatch):
+    monkeypatch.setattr(settings, "API_KEY_1", "key-1")
+    monkeypatch.setattr(settings, "API_KEY_2", "key-2")
+    monkeypatch.setattr(settings, "API_KEY_3", "key-3")
+
+    response = client.get("/v1/models", headers={"Authorization": "Bearer key-2"})
+
+    assert response.status_code == 200
+
+
+def test_health_reports_api_key_auth_enabled_when_keys_configured(client, monkeypatch):
+    monkeypatch.setattr(settings, "API_KEY_1", "key-1")
+    monkeypatch.setattr(settings, "API_KEY_2", "")
+    monkeypatch.setattr(settings, "API_KEY_3", "")
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["api_key_auth_enabled"] is True
