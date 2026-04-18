@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import copy
 import os
 
 import click
 import uvicorn
+from uvicorn.config import LOGGING_CONFIG
 
 
 @click.command()
@@ -40,6 +42,9 @@ def main(host, port, workers, config, debug, log_level):
     if debug:
         click.echo("Debug mode enabled — workers=1, log-level=debug")
 
+    log_config = copy.deepcopy(LOGGING_CONFIG)
+    log_config["disable_existing_loggers"] = False
+
     uvicorn.run(
         "app.main:app",
         host=effective_host,
@@ -47,6 +52,7 @@ def main(host, port, workers, config, debug, log_level):
         workers=effective_workers,
         log_level=effective_log_level,
         reload=debug,
+        log_config=log_config,
     )
 
 

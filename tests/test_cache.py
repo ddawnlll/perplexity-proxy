@@ -73,6 +73,16 @@ async def test_make_key_is_deterministic():
 
 
 @pytest.mark.asyncio
+async def test_make_key_differs_for_temperature():
+    cache = LRUCache(max_size=2, ttl=60, enabled=True)
+
+    key1 = cache.make_key("query", "model", temperature=0.1)
+    key2 = cache.make_key("query", "model", temperature=0.9)
+
+    assert key1 != key2
+
+
+@pytest.mark.asyncio
 async def test_clear_empties_cache():
     cache = LRUCache(max_size=2, ttl=60, enabled=True)
     key = cache.make_key("Paris", "gpt-5.2")

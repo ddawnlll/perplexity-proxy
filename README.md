@@ -10,7 +10,7 @@
 
 ## Overview
 
-`perplexity-proxy` is an OpenAI-compatible REST API server built with FastAPI that sits between any OpenAI-compatible client (opencode, Cursor, VS Code Copilot, LangChain, etc.) and Perplexity AI. It translates standard `/v1/chat/completions` requests into Perplexity queries using the `perplexity-ai` Python library, which interacts with Perplexity's web interface directly — bypassing the need for a paid API key.
+`perplexity-proxy` is an OpenAI-compatible REST API server built with FastAPI that sits between any OpenAI-compatible client (opencode, Cursor, VS Code Copilot, LangChain, etc.) and Perplexity AI. It translates standard `/v1/chat/completions`, `/v1/completions`, and `/v1/responses` requests into Perplexity queries using the `perplexity-ai` Python library, which interacts with Perplexity's web interface directly — bypassing the need for a paid API key.
 
 Model availability is resolved **dynamically** at startup by reading `AVAILABLE_MODELS` from the `perplexity` library itself. When the upstream library adds or removes models, the proxy reflects those changes automatically — no manual mapping maintenance required.
 
@@ -51,12 +51,12 @@ Client (opencode / Cursor / any OpenAI-compatible tool)
 
 ### Request Lifecycle
 
-1. Client sends a standard OpenAI `POST /v1/chat/completions` request
+1. Client sends a standard OpenAI `POST /v1/chat/completions`, `POST /v1/completions`, or `POST /v1/responses` request
 2. FastAPI validates the request body against Pydantic schemas
 3. The **Dynamic Model Map** (built at startup from `perplexity.models.AVAILABLE_MODELS`) resolves the requested model name to a Perplexity `mode` and `model` pair
-4. The **LRU Cache** is checked — if an identical query/model combination was recently seen, the cached response is returned immediately
+4. The **LRU Cache** is checked — if an identical normalized request was recently seen, the cached response is returned immediately
 5. `perplexity_async.Client` sends the query to Perplexity's web interface asynchronously
-6. The response is formatted into OpenAI's response schema
+6. The response is formatted into the appropriate OpenAI-compatible schema
 7. The result is returned as a full JSON response **or** streamed token-by-token via SSE
 
 ---
@@ -64,15 +64,18 @@ Client (opencode / Cursor / any OpenAI-compatible tool)
 ## Features
 
 - **OpenAI-compatible API** — drop-in replacement, works with any OpenAI SDK client
+- **Multiple compatibility surfaces** — supports `/v1/chat/completions`, `/v1/completions`, and `/v1/responses`
 - **Dynamic model discovery** — model list is auto-generated from `perplexity.models.AVAILABLE_MODELS` at startup; no hardcoded mappings
 - **Async throughout** — built on `perplexity_async` and FastAPI's full async stack
 - **Streaming support** — Server-Sent Events (SSE) for real-time token streaming
+- **Streaming blob filtering** — internal Perplexity state blobs are dropped before formatting, and real text is extracted from upstream blocks
 - **LRU response cache** — in-memory cache with configurable TTL and max size
 - **Multi-worker** — runs with `gunicorn` + `uvicorn` workers for horizontal concurrency
 - **Cookie-based auth** — injects Perplexity session cookies for Pro/Reasoning/Deep Research access
 - **Inbound API-key auth** — optional bearer-token protection for all `/v1/*` endpoints
 - **Anonymous fallback** — works without cookies in `auto` mode
 - **`/v1/models` endpoint** — dynamically exposes all available models for client discovery
+- **`/v1/models/refresh` endpoint** — refreshes the model map without restarting the server
 - **Health check endpoint** — `/health` for uptime and auth status monitoring
 - **OpenAPI / Swagger / ReDoc** — interactive API docs at `/openapi.json`, `/docs`, and `/redoc`
 - **Startup Perplexity session check** — verifies cookies against Perplexity when configured
@@ -101,7 +104,9 @@ perplexity-proxy/
 │   │                               #         CACHE_MAX_SIZE, CACHE_TTL_SECONDS
 │   │
 │   ├── models.py                   # Pydantic request/response schemas
-│   │                               # - ChatRequest: messages, model, stream, temperature (ignored)
+│   │                               # - ChatRequest: messages, model, stream, temperature, tools
+│   │                               # - CompletionsRequest: prompt-based legacy completion shim
+│   │                               # - ResponsesRequest: input/instructions/stream-compatible schema
 │   │                               # - ChatResponse: OpenAI-shaped completion response
 │   │                               # - StreamChunk: SSE delta event schema
 │   │                               # - ModelList: /v1/models response schema
@@ -109,8 +114,11 @@ perplexity-proxy/
 │   │
 │   ├── router.py                   # API route definitions (thin HTTP layer)
 │   │                               # - POST /v1/chat/completions
+│   │                               # - POST /v1/completions
+│   │                               # - POST /v1/responses
 │   │                               # - GET  /v1/models
 │   │                               # - GET  /health
+│   │                               # - POST /v1/models/refresh
 │   │
 │   ├── client.py                   # perplexity_async.Client lifecycle wrapper
 │   │                               # - Holds a single shared async client instance per worker
@@ -128,15 +136,17 @@ perplexity-proxy/
 │   │                               # - MODEL_MAP: Dict[str, Dict] used by router and /v1/models
 │   │
 │   ├── cache.py                    # LRU response cache
-│   │                               # - Keyed by (query, model_name, sources_tuple)
+│   │                               # - Keyed by normalized request payload hash
+│   │                               # - Includes query, model_name, request_type, and request-shaping fields
 │   │                               # - Max size and TTL configurable via config.py
 │   │                               # - Thread-safe for multi-worker use via asyncio.Lock
 │   │                               # - Returns None on cache miss
 │   │
 │   └── streaming.py                # SSE stream formatter
 │                                   # - Wraps perplexity_async stream generator
-│                                   # - Converts each chunk["answer"] fragment into
-│                                   #   OpenAI delta format: {"choices":[{"delta":{"content":"..."}}]}
+│                                   # - Filters internal Perplexity state blobs before formatting
+│                                   # - Extracts real answer text from upstream blocks/legacy fields
+│                                   # - Converts chunks into OpenAI delta format
 │                                   # - Yields "data: {json}\n\n" strings
 │                                   # - Terminates with "data: [DONE]\n\n"
 │
@@ -318,12 +328,19 @@ client = OpenAI(
     base_url="http://localhost:8080/v1"
 )
 
-# Standard request
+# Chat Completions
 response = client.chat.completions.create(
     model="sonar-reasoning",
     messages=[{"role": "user", "content": "How does Python's GIL affect async I/O?"}]
 )
 print(response.choices[0].message.content)
+
+# Legacy Completions
+completion = client.completions.create(
+    model="sonar",
+    prompt="Write a one-line summary of asyncio"
+)
+print(completion.choices[0].text)
 
 # Streaming
 for chunk in client.chat.completions.create(
@@ -332,6 +349,13 @@ for chunk in client.chat.completions.create(
     stream=True
 ):
     print(chunk.choices[0].delta.content or "", end="", flush=True)
+
+# Responses API
+response = client.responses.create(
+    model="sonar",
+    input="Explain what a mutex is in one sentence"
+)
+print(response.output[0].content[0].text)
 ```
 
 ### opencode
@@ -359,6 +383,13 @@ Settings → Models → Add custom model:
 
 ```bash
 curl http://localhost:8080/v1/models
+```
+
+### Refresh the model map
+
+```bash
+curl -X POST http://localhost:8080/v1/models/refresh \
+  -H "Authorization: Bearer $REFRESH_SECRET"
 ```
 
 ### Health check
@@ -404,9 +435,9 @@ curl http://localhost:8080/health
 
 ## Known Limitations
 
-- **No function/tool calling** — Perplexity's web interface does not expose tool use
-- **System prompt ignored** — Perplexity does not support custom system prompts via its web interface; the `system` message role is silently dropped
-- **Single user message** — only the last `user` role message is forwarded as the query; conversation history is not sent
+- **No function/tool execution** — tool fields are accepted for compatibility, but Perplexity's web interface does not expose tool use
+- **Responses API is simplified** — the proxy returns a clean OpenAI-shaped subset, not the full OpenAI event lifecycle
+- **Single upstream query synthesis** — conversation history is reduced into one text query instead of being replayed as a full multi-turn conversation
 - **No search filters** — `search_recency_filter` and `search_domain_filter` are only available in the official paid API
 - **Cookie expiry** — session tokens expire periodically and must be refreshed manually
 - **ToS risk** — this project uses a reverse-engineered interface; use responsibly and at your own risk

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
 from collections import OrderedDict
 
@@ -16,8 +17,49 @@ class LRUCache:
         self._ttl = ttl
         self._enabled = enabled
 
-    def make_key(self, query: str, model_name: str) -> str:
-        raw = f"{model_name}:{query}"
+    def make_key(
+        self,
+        query: str,
+        model_name: str,
+        *,
+        request_type: str = "chat",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        top_p: float | None = None,
+        stream: bool = False,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        stop: str | list[str] | None = None,
+        logprobs: int | None = None,
+        top_logprobs: int | None = None,
+        echo: bool | None = None,
+        instructions: str | None = None,
+        previous_response_id: str | None = None,
+        tools: object | None = None,
+        tool_choice: object | None = None,
+        parallel_tool_calls: bool | None = None,
+    ) -> str:
+        payload = {
+            "echo": echo,
+            "frequency_penalty": frequency_penalty,
+            "instructions": instructions,
+            "logprobs": logprobs,
+            "max_tokens": max_tokens,
+            "model_name": model_name,
+            "presence_penalty": presence_penalty,
+            "parallel_tool_calls": parallel_tool_calls,
+            "previous_response_id": previous_response_id,
+            "query": query,
+            "request_type": request_type,
+            "stop": stop,
+            "stream": stream,
+            "temperature": temperature,
+            "top_logprobs": top_logprobs,
+            "top_p": top_p,
+            "tool_choice": tool_choice,
+            "tools": tools,
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(raw.encode()).hexdigest()
 
     async def get(self, key: str) -> str | None:
