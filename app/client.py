@@ -84,12 +84,12 @@ def _map_exception(error: Exception) -> HTTPException | None:
     return None
 
 
-async def search(query: str, mode: str, model, stream: bool = False):
+async def search(query: str, mode: str, model, stream: bool = False, follow_up: dict[str, Any] | None = None):
     client = get_client()
     retries = 3
     for attempt in range(retries):
         try:
-            return await client.search(query, mode=mode, model=model, stream=stream)
+            return await client.search(query, mode=mode, model=model, stream=stream, follow_up=follow_up)
         except NetworkError as error:
             if attempt == retries - 1:
                 raise HTTPException(status_code=503, detail="Upstream unavailable") from error

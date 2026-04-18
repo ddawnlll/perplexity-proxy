@@ -15,6 +15,10 @@ def patch_lifespan(monkeypatch, mocker):
     original_map = dict(mapper.MODEL_MAP)
     mocker.patch("app.main.init_client", new=AsyncMock(return_value=None))
     mocker.patch("app.main.close_client", new=AsyncMock(return_value=None))
+    mocker.patch(
+        "app.main.check_perplexity_session",
+        new=AsyncMock(return_value={"ok": True, "authenticated": True, "status_code": 200}),
+    )
     yield
     mapper.MODEL_MAP = original_map
 
@@ -69,7 +73,8 @@ def test_refresh_returns_503_when_refresh_models_fails(monkeypatch, mocker):
         response = client.post("/v1/models/refresh", headers={"Authorization": "Bearer abc"})
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "Model refresh failed — static map still active"
+    payload = response.json()
+    assert payload["error"]["message"] == "Model refresh failed — static map still active"
 
 
 def test_refresh_returns_200_on_success(monkeypatch, mocker):

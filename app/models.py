@@ -21,11 +21,15 @@ class ChatRequest(ProxyModel):
     temperature: float | None = None
     max_tokens: int | None = None
     top_p: float | None = None
+    tools: list[Any] | None = None
+    tool_choice: Any | None = None
+    parallel_tool_calls: bool | None = None
 
 
 class ChatResponseMessage(ProxyModel):
     role: str
     content: str | list[Any] | None = None
+    tool_calls: list[Any] | None = None
 
 
 class ChatChoice(ProxyModel):
@@ -40,6 +44,36 @@ class ChatUsage(ProxyModel):
     total_tokens: int = 0
 
 
+class CompletionsRequest(ProxyModel):
+    model: str
+    prompt: str | list[str] | None = None
+    stream: bool = False
+    temperature: float | None = None
+    max_tokens: int | None = None
+    top_p: float | None = None
+    frequency_penalty: float | None = None
+    presence_penalty: float | None = None
+    stop: str | list[str] | None = None
+    logprobs: int | None = None
+    top_logprobs: int | None = None
+    echo: bool | None = None
+
+
+class CompletionsChoice(ProxyModel):
+    index: int
+    text: str
+    finish_reason: str | None = None
+
+
+class CompletionsResponse(ProxyModel):
+    id: str
+    object: Literal["text_completion"] = "text_completion"
+    created: int
+    model: str
+    choices: list[CompletionsChoice]
+    usage: ChatUsage | None = None
+
+
 class ChatResponse(ProxyModel):
     id: str
     object: Literal["chat.completion"] = "chat.completion"
@@ -52,6 +86,7 @@ class ChatResponse(ProxyModel):
 class StreamDelta(ProxyModel):
     role: str | None = None
     content: str | None = None
+    tool_calls: list[Any] | None = None
 
 
 class StreamChoice(ProxyModel):
@@ -84,6 +119,10 @@ class ResponsesRequest(ProxyModel):
     stream: bool = False
     temperature: float | None = None
     max_output_tokens: int | None = None
+    previous_response_id: str | None = None
+    tools: list[Any] | None = None
+    tool_choice: Any | None = None
+    parallel_tool_calls: bool | None = None
 
 
 class ResponsesOutputText(ProxyModel):
@@ -144,6 +183,9 @@ __all__ = [
     "ChatResponse",
     "ChatResponseMessage",
     "ChatUsage",
+    "CompletionsChoice",
+    "CompletionsRequest",
+    "CompletionsResponse",
     "HealthResponse",
     "RefreshResponse",
     "ModelList",
