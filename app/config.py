@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     CACHE_ENABLED: bool = True
     CACHE_MAX_SIZE: int = 256
     CACHE_TTL_SECONDS: int = 300
+    REFRESH_SECRET: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

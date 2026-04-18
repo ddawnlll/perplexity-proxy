@@ -5,13 +5,14 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.cache import cache
-from app.client import search
+from app.client import get_client, search
 from app.config import settings
-from app.mapper import MODEL_MAP, get_model_list, resolve
+from app import mapper
+from app.mapper import get_model_list, resolve
 from app.models import (
     ChatChoice,
     ChatRequest,
@@ -121,8 +122,32 @@ async def health() -> HealthResponse:
         status="ok",
         cache_enabled=settings.CACHE_ENABLED,
         authenticated=bool(settings.PERPLEXITY_COOKIES),
-        model_count=len(MODEL_MAP),
+        model_count=len(mapper.MODEL_MAP),
     )
+
+
+@router.post("/v1/models/refresh")
+async def refresh_models_endpoint(authorization: str = Header(...)):
+    expected = f"Bearer {settings.REFRESH_SECRET}"
+    if not settings.REFRESH_SECRET or authorization != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing refresh secret")
+
+    client = get_client()
+    success = await client.refresh_models()
+
+    if not success:
+        raise HTTPException(
+            status_code=503,
+            detail="Model refresh failed — static map still active",
+        )
+
+    mapper.MODEL_MAP = mapper.build_model_map()
+
+    return {
+        "status": "ok",
+        "model_count": len(mapper.MODEL_MAP),
+        "models": list(mapper.MODEL_MAP.keys()),
+    }
 
 
 @router.post("/v1/chat/completions", response_model=ChatResponse)
