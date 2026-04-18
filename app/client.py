@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import perplexity_async
 from fastapi import HTTPException
+from perplexity.config import ENDPOINT_AUTH_SESSION
 from perplexity.exceptions import (
     AccountCreationError,
     AuthenticationError,
@@ -49,6 +51,26 @@ async def close_client():
     _client = None
 
 
+async def check_perplexity_session() -> dict[str, Any]:
+    client = get_client()
+    try:
+        response = await client.session.get(ENDPOINT_AUTH_SESSION, timeout=10)
+        authenticated = False
+        try:
+            payload = response.json()
+            authenticated = bool(isinstance(payload, dict) and payload.get("user"))
+        except Exception:
+            authenticated = bool(response.text and response.text != "null")
+
+        return {
+            "ok": response.status_code == 200,
+            "status_code": response.status_code,
+            "authenticated": authenticated,
+        }
+    except Exception as error:
+        return {"ok": False, "status_code": None, "authenticated": False, "error": str(error)}
+
+
 def get_client() -> perplexity_async.Client:
     if _client is None:
         raise HTTPException(status_code=503, detail="Client not initialized")
@@ -79,4 +101,11 @@ async def search(query: str, mode: str, model, stream: bool = False):
             raise HTTPException(status_code=500, detail=str(error)) from error
 
 
-__all__ = ["EXCEPTION_MAP", "close_client", "get_client", "init_client", "search"]
+__all__ = [
+    "EXCEPTION_MAP",
+    "check_perplexity_session",
+    "close_client",
+    "get_client",
+    "init_client",
+    "search",
+]

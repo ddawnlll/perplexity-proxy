@@ -109,6 +109,23 @@ def test_refresh_is_not_blocked_by_api_key_auth(monkeypatch, mocker):
     assert response.status_code == 200
 
 
+def test_startup_perplexity_health_check_runs_when_cookies_exist(monkeypatch, mocker):
+    monkeypatch.setattr(settings, "PERPLEXITY_COOKIES", {"next-auth.session-token": "token"})
+    monkeypatch.setattr(settings, "API_KEY_1", "")
+    monkeypatch.setattr(settings, "API_KEY_2", "")
+    monkeypatch.setattr(settings, "API_KEY_3", "")
+
+    health_mock = mocker.patch(
+        "app.main.check_perplexity_session",
+        new=AsyncMock(return_value={"ok": True, "authenticated": True, "status_code": 200}),
+    )
+
+    with _test_client():
+        pass
+
+    health_mock.assert_awaited_once()
+
+
 def test_get_models_after_refresh_returns_updated_list(monkeypatch, mocker):
     monkeypatch.setattr(settings, "REFRESH_SECRET", "abc")
     client_mock = mocker.Mock()

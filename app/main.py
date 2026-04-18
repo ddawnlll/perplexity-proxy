@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
-from app.client import close_client, init_client
+from app.client import check_perplexity_session, close_client, init_client
 from app.config import settings
 from app.router import router
 
@@ -38,6 +38,16 @@ async def lifespan(app: FastAPI):
     if settings.DEBUG:
         logger.info("Debug settings: %s", _debug_settings_snapshot())
     await init_client()
+
+    if settings.PERPLEXITY_COOKIES:
+        health = await check_perplexity_session()
+        if health.get("ok") and health.get("authenticated"):
+            logger.info("Perplexity auth health check passed")
+        else:
+            logger.warning("Perplexity auth health check failed: %s", health)
+    else:
+        logger.info("Perplexity auth health check skipped (no cookies configured)")
+
     yield
     await close_client()
 
@@ -75,6 +85,10 @@ def create_app() -> FastAPI:
         description="OpenAI-compatible proxy for Perplexity AI",
         version="1.0.0",
         lifespan=lifespan,
+        openapi_url="/openapi.json",
+        docs_url="/docs",
+        redoc_url="/redoc",
+        swagger_ui_parameters={"defaultModelsExpandDepth": -1, "displayRequestDuration": True},
     )
     app.middleware("http")(api_key_middleware)
     app.include_router(router)

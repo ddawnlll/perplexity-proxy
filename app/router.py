@@ -13,10 +13,6 @@ from app.client import get_client, search
 from app.config import settings
 from app import mapper
 from app.mapper import get_model_list, resolve
-
-
-def build_model_map():
-    return mapper.build_model_map()
 from app.models import (
     ChatChoice,
     ChatRequest,
@@ -25,6 +21,7 @@ from app.models import (
     ChatUsage,
     HealthResponse,
     ModelList,
+    RefreshResponse,
     ResponsesOutputMessage,
     ResponsesOutputText,
     ResponsesRequest,
@@ -34,6 +31,10 @@ from app.models import (
 from app.streaming import chat_completions_stream, responses_stream
 
 router = APIRouter()
+
+
+def build_model_map():
+    return mapper.build_model_map()
 
 
 def _content_to_text(content: Any) -> str:
@@ -115,12 +116,24 @@ def _responses_response(model_name: str, result: Any) -> ResponsesResponse:
     )
 
 
-@router.get("/v1/models", response_model=ModelList)
+@router.get(
+    "/v1/models",
+    response_model=ModelList,
+    tags=["Models"],
+    summary="List available models",
+    description="Returns the currently available proxy model IDs exposed by the upstream Perplexity model map.",
+)
 async def list_models() -> ModelList:
     return ModelList(data=get_model_list())
 
 
-@router.get("/health", response_model=HealthResponse)
+@router.get(
+    "/health",
+    response_model=HealthResponse,
+    tags=["Health"],
+    summary="Health check",
+    description="Reports proxy status, cache status, cookie auth status, and whether API-key auth is enabled.",
+)
 async def health() -> HealthResponse:
     return HealthResponse(
         status="ok",
@@ -131,8 +144,15 @@ async def health() -> HealthResponse:
     )
 
 
-@router.post("/v1/models/refresh")
-async def refresh_models_endpoint(authorization: str = Header(...)):
+@router.post(
+    "/v1/models/refresh",
+    response_model=RefreshResponse,
+    tags=["Models"],
+    summary="Refresh the upstream model map",
+    description="Refreshes the dynamic model map from Perplexity using the active session cookies.",
+    responses={401: {"description": "Invalid or missing refresh secret"}, 503: {"description": "Refresh failed"}},
+)
+async def refresh_models_endpoint(authorization: str = Header(...)) -> RefreshResponse:
     expected = f"Bearer {settings.REFRESH_SECRET}"
     if not settings.REFRESH_SECRET or authorization != expected:
         raise HTTPException(status_code=401, detail="Invalid or missing refresh secret")
@@ -148,14 +168,21 @@ async def refresh_models_endpoint(authorization: str = Header(...)):
 
     mapper.MODEL_MAP = build_model_map()
 
-    return {
-        "status": "ok",
-        "model_count": len(mapper.MODEL_MAP),
-        "models": list(mapper.MODEL_MAP.keys()),
-    }
+    return RefreshResponse(
+        status="ok",
+        model_count=len(mapper.MODEL_MAP),
+        models=list(mapper.MODEL_MAP.keys()),
+    )
 
 
-@router.post("/v1/chat/completions", response_model=ChatResponse)
+@router.post(
+    "/v1/chat/completions",
+    response_model=ChatResponse,
+    tags=["Chat"],
+    summary="Create a chat completion",
+    description="OpenAI-compatible chat completion endpoint that forwards the last user message to Perplexity.",
+    responses={401: {"description": "Invalid API key"}, 400: {"description": "Invalid model"}},
+)
 async def chat_completions(req: ChatRequest):
     mode, model = resolve(req.model)
     query = _extract_chat_query(req.messages)
@@ -178,7 +205,14 @@ async def chat_completions(req: ChatRequest):
     return response
 
 
-@router.post("/v1/responses", response_model=ResponsesResponse)
+@router.post(
+    "/v1/responses",
+    response_model=ResponsesResponse,
+    tags=["Responses"],
+    summary="Create a response",
+    description="OpenAI-compatible Responses API endpoint for text and streaming output.",
+    responses={401: {"description": "Invalid API key"}, 400: {"description": "Invalid model"}},
+)
 async def responses(req: ResponsesRequest):
     mode, model = resolve(req.model)
     query = _extract_responses_query(req.input)

@@ -131,6 +131,12 @@ class HealthResponse(ProxyModel):
     model_count: int
 
 
+class RefreshResponse(ProxyModel):
+    status: Literal["ok"] = "ok"
+    model_count: int
+    models: list[str]
+
+
 __all__ = [
     "ChatChoice",
     "ChatMessage",
@@ -139,6 +145,7 @@ __all__ = [
     "ChatResponseMessage",
     "ChatUsage",
     "HealthResponse",
+    "RefreshResponse",
     "ModelList",
     "ModelObject",
     "ProxyModel",

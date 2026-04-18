@@ -16,6 +16,7 @@ from perplexity.exceptions import AuthenticationError, RateLimitError
 def client(mocker):
     mocker.patch("app.main.init_client", new=AsyncMock(return_value=None))
     mocker.patch("app.main.close_client", new=AsyncMock(return_value=None))
+    mocker.patch("app.main.check_perplexity_session", new=AsyncMock(return_value={"ok": True, "authenticated": True, "status_code": 200}))
     with TestClient(app) as test_client:
         yield test_client
 
@@ -213,6 +214,21 @@ def test_router_has_no_double_prefixed_routes():
     assert "/v1/responses" in paths
     assert "/health" in paths
     assert not any(path.startswith("/v1/v1/") for path in paths)
+
+
+def test_openapi_and_swagger_endpoints_are_exposed(client):
+    openapi_response = client.get("/openapi.json")
+    docs_response = client.get("/docs")
+    redoc_response = client.get("/redoc")
+
+    assert openapi_response.status_code == 200
+    assert docs_response.status_code == 200
+    assert redoc_response.status_code == 200
+    schema = openapi_response.json()
+    assert "/v1/chat/completions" in schema["paths"]
+    assert "/v1/responses" in schema["paths"]
+    assert "/v1/models" in schema["paths"]
+    assert "/health" in schema["paths"]
 
 
 def test_api_key_is_required_when_configured(client, monkeypatch):

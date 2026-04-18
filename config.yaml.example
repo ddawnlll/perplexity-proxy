@@ -7,6 +7,7 @@ host: "0.0.0.0"
 
 # Inbound API keys for OpenAI-compatible clients.
 # Set one or more keys; requests to /v1/* must send a matching Authorization: Bearer <key> header.
+# These map to API_KEY_1 / API_KEY_2 / API_KEY_3 environment variables.
 # Leave all three empty to disable inbound API-key auth.
 # Example:
 # api-key-1: "sk-proxy-1"

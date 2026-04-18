@@ -74,6 +74,8 @@ Client (opencode / Cursor / any OpenAI-compatible tool)
 - **Anonymous fallback** — works without cookies in `auto` mode
 - **`/v1/models` endpoint** — dynamically exposes all available models for client discovery
 - **Health check endpoint** — `/health` for uptime and auth status monitoring
+- **OpenAPI / Swagger / ReDoc** — interactive API docs at `/openapi.json`, `/docs`, and `/redoc`
+- **Startup Perplexity session check** — verifies cookies against Perplexity when configured
 - **Structured error handling** — maps `perplexity` library exceptions to proper HTTP status codes
 
 ---
@@ -363,8 +365,14 @@ curl http://localhost:8080/v1/models
 
 ```bash
 curl http://localhost:8080/health
-# {"status": "ok", "cache_enabled": true, "authenticated": true, "model_count": 13}
+# {"status": "ok", "cache_enabled": true, "authenticated": true, "api_key_auth_enabled": true, "model_count": 13}
 ```
+
+### API docs
+
+- Swagger UI: `http://localhost:8080/docs`
+- OpenAPI JSON: `http://localhost:8080/openapi.json`
+- ReDoc: `http://localhost:8080/redoc`
 
 ---
 
