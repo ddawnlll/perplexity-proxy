@@ -4,12 +4,17 @@ import json
 
 from app.tools.shim import (
     Agent,
+    CodingPhase,
     Phase,
+    build_full_context_prompt,
     build_hermes_prompt,
     build_perplexity_instruction,
+    coding_shim,
     decide_tool,
     detect_agent,
+    detect_coding_phase,
     detect_phase,
+    extract_task_history,
     wrap_as_tool_response,
     wrap_for_hermes,
 )
@@ -432,6 +437,32 @@ def test_build_perplexity_instruction_includes_system_context_for_planning():
     assert "wrap each full command in backticks" in prompt
 
 
+def test_build_perplexity_instruction_preserves_task_history():
+    decision = {
+        "tool": "write_to_file",
+        "phase": Phase.GENERATING.value,
+        "phase_context": {
+            "file": "calculator.py",
+            "query": "add divide function",
+            "current_content": "def add(a, b):\n    return a + b\n",
+        },
+    }
+    prompt = build_perplexity_instruction(
+        decision,
+        "add divide function",
+        messages=[
+            {"role": "user", "content": "Create calculator.py"},
+            {"role": "assistant", "content": "Sure"},
+            {"role": "user", "content": [{"type": "text", "text": "<user_message>add divide function</user_message>"}]},
+        ],
+    )
+
+    assert prompt is not None
+    assert "Conversation history:" in prompt
+    assert "Create calculator.py" in prompt
+    assert "add divide function" in prompt
+
+
 def test_build_hermes_prompt_requests_plain_terminal_text():
     prompt = build_hermes_prompt(
         "hello",
@@ -442,6 +473,74 @@ def test_build_hermes_prompt_requests_plain_terminal_text():
     assert "Write as if outputting to a terminal." in prompt
     assert "Persona context: You are Hermes. Keep terminal output concise. No markdown." in prompt
     assert prompt.endswith("User message: hello")
+
+
+def test_extract_task_history_preserves_read_blocks_and_recent_turns():
+    history = extract_task_history(
+        [
+            {"role": "user", "content": "first request"},
+            {"role": "assistant", "content": "ok"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "<user_message>second request</user_message>"},
+                    {"type": "text", "text": "[read_file for 'calculator.py']\nFile: calculator.py\n 1 | def add(a, b):\n"},
+                ],
+            },
+        ]
+    )
+
+    assert "first request" in history
+    assert "second request" in history
+    assert "[read_file for 'calculator.py']" in history
+
+
+def test_detect_coding_phase_tracks_file_workflow():
+    assert detect_coding_phase([], "Create calculator.py") == CodingPhase.PLANNING
+    assert detect_coding_phase(
+        [{"role": "assistant", "tool_calls": [{"function": {"name": "read_file", "arguments": "{\"path\":\"calculator.py\"}"}}]}],
+        "edit it",
+    ) == CodingPhase.FILE_EDIT
+
+
+def test_build_full_context_prompt_includes_task_history_and_test_output():
+    prompt = build_full_context_prompt(
+        CodingPhase.FIXING,
+        {
+            "task_history": "Create calculator.py\n\nEdit calculator.py",
+            "read_files": ["calculator.py"],
+            "written_files": ["calculator.py"],
+            "test_output": "ImportError: missing helper",
+            "current_file": {"path": "calculator.py", "content": "def add(a, b): pass"},
+        },
+        system_message="Project uses Python",
+    )
+
+    assert "FULL PROJECT CONTEXT" in prompt
+    assert "Task history:" in prompt
+    assert "Read files: calculator.py" in prompt
+    assert "Written files: calculator.py" in prompt
+    assert "Latest test failure:" in prompt
+    assert "Project uses Python" in prompt
+
+
+def test_coding_shim_returns_roo_state_with_full_context_prompt():
+    state = coding_shim(
+        [
+            {"role": "user", "content": "Create calculator.py"},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "read_file", "arguments": "{\"path\":\"calculator.py\"}"}}]},
+            {"role": "tool", "content": "def add(a, b):\n    return a + b\n"},
+        ],
+        "Create calculator.py",
+        tools=[{"type": "function", "function": {"name": "attempt_completion", "parameters": {}}}],
+        user_agent="RooCode/3.52.1",
+        system_message="Project uses Python",
+    )
+
+    assert state["agent"] == Agent.ROO
+    assert state["response_wrapper"] == "roo_tool"
+    assert "FULL PROJECT CONTEXT" in state["full_context_prompt"]
+    assert "Return ONLY the complete updated content of calculator.py." in state["perplexity_prompt"]
 
 
 def test_decide_tool_returns_phase_based_tool_shapes():

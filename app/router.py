@@ -44,7 +44,7 @@ from app.tools.shim import (
     _last_tool_call,
     build_hermes_prompt,
     build_perplexity_instruction,
-    detect_agent,
+    coding_shim,
     decide_tool,
     wrap_as_tool_response,
     wrap_for_hermes,
@@ -760,20 +760,21 @@ async def chat_completions(request: Request):
         raw_messages = raw_body.get("messages") if isinstance(raw_body.get("messages"), list) else []
         req = _normalize_chat_payload(raw_body)
         user_agent = request.headers.get("user-agent", "")
-        agent = detect_agent(req.tools, user_agent=user_agent)
-        roo_mode = agent == Agent.ROO
         mode, model = resolve(req.model)
         continuation_key = _continuation_transcript_key(req.messages)
         follow_up = await _resolve_follow_up(transcript_key=continuation_key)
         query, system_prompt = _build_query_from_messages(req.messages)
+        coding_state = coding_shim(req.messages, query, req.tools, user_agent=user_agent, system_message=system_prompt)
+        agent = coding_state["agent"]
+        roo_mode = agent == Agent.ROO
         if roo_mode:
             if not raw_messages:
                 logger.error("raw_messages empty! roo extraction will fail.")
             roo_messages = raw_messages
             user_query = _extract_query(roo_messages)
             logger.info("roo extracted query=%s", _summary(user_query))
-            decision = decide_tool(roo_messages, user_query, tools=req.tools)
-            perplexity_q = build_perplexity_instruction(decision, user_query, messages=roo_messages)
+            decision = coding_state.get("decision") or decide_tool(roo_messages, user_query, tools=req.tools)
+            perplexity_q = coding_state.get("perplexity_prompt") or build_perplexity_instruction(decision, user_query, messages=roo_messages)
             response_id = f"chatcmpl-{uuid.uuid4().hex}"
             prose = decision.get("static_result")
             raw_result: Any = None
@@ -821,7 +822,7 @@ async def chat_completions(request: Request):
                 hermes_query = _extract_query([_message_to_dict(message) for message in req.messages])
             if not hermes_query:
                 hermes_query = query
-            hermes_prompt = build_hermes_prompt(hermes_query, system_prompt)
+            hermes_prompt = coding_state.get("perplexity_prompt") or build_hermes_prompt(hermes_query, system_prompt)
             generator = await search(hermes_prompt, mode, model, stream=True, follow_up=follow_up)
             stream = chat_completions_stream(
                 _wrap_stream_with_follow_up(

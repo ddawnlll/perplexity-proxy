@@ -122,8 +122,12 @@ def test_chat_completions_wraps_roo_requests_as_attempt_completion_tool_call(cli
     }
 
 
+async def _hermes_stream_gen():
+    yield "All done."
+
+
 def test_chat_completions_forces_streaming_plain_response_for_hermes(client, cache_mocks, search_mock):
-    search_mock.return_value = "All done."
+    search_mock.return_value = _hermes_stream_gen()
 
     response = client.post(
         "/v1/chat/completions",

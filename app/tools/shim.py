@@ -92,6 +92,15 @@ class Phase(str, Enum):
     COMPLETE = "complete"
 
 
+class CodingPhase(str, Enum):
+    PLANNING = "planning"
+    FILE_READ = "file_read"
+    FILE_EDIT = "file_edit"
+    TESTING = "testing"
+    FIXING = "fixing"
+    COMPLETE = "complete"
+
+
 def detect_agent(tools: list | None, user_agent: str = "") -> Agent:
     if "RooCode/" in user_agent:
         return Agent.ROO
@@ -577,7 +586,12 @@ def detect_phase(messages: list, user_query: str, tools: list | None = None) -> 
     return Phase.PLANNING, {"query": task_text or user_query}
 
 
-def build_phase_prompt(phase: Phase, context: dict[str, Any], system_message: str | None = None) -> str | None:
+def build_phase_prompt(
+    phase: Phase,
+    context: dict[str, Any],
+    system_message: str | None = None,
+    task_history: str | None = None,
+) -> str | None:
     if phase == Phase.PLANNING:
         query = context.get("query", "")
         parts = [
@@ -585,6 +599,8 @@ def build_phase_prompt(phase: Phase, context: dict[str, Any], system_message: st
             "Plan and implement the task deterministically, one file and one command at a time.",
             "Use the project context below to infer the language, framework, test runner, and file structure. Do not assume JavaScript if the context indicates another stack.",
         ]
+        if task_history:
+            parts.append(f"Conversation history:\n{task_history}")
         if system_message:
             snippets = _context_snippets(system_message)
             if snippets:
@@ -611,6 +627,8 @@ def build_phase_prompt(phase: Phase, context: dict[str, Any], system_message: st
             "No markdown fences, no filename header, no explanations.",
             f"Task: {query}",
         ]
+        if task_history:
+            parts.append(f"Conversation history:\n{task_history}")
         if system_message:
             parts.append(f"System context:\n{system_message}")
         if current_content:
@@ -629,6 +647,8 @@ def build_phase_prompt(phase: Phase, context: dict[str, Any], system_message: st
             "No markdown fences, no filename header, no explanations.",
             f"Task context: {query}",
         ]
+        if task_history:
+            parts.append(f"Conversation history:\n{task_history}")
         if output:
             parts.append(f"Test output:\n{output}")
         if current_content:
@@ -726,7 +746,12 @@ def build_perplexity_instruction(decision: dict[str, Any], user_query: str, mess
             if isinstance(content, str) and content.strip():
                 system_message = content
                 break
-    return build_phase_prompt(phase, decision.get("phase_context", {}), system_message)
+    task_history = extract_task_history(messages or []) if messages else None
+    context = dict(decision.get("phase_context", {}))
+    context.setdefault("query", user_query)
+    if task_history:
+        context.setdefault("task_history", task_history)
+    return build_phase_prompt(phase, context, system_message, task_history)
 
 
 def wrap_as_tool_response(
@@ -811,4 +836,228 @@ def wrap_for_hermes(prose: str | None, model: str, req_id: str) -> dict[str, Any
             }
         ],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+def _message_content_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+    content = message.get("content", "")
+    if isinstance(content, list):
+        return [block for block in content if isinstance(block, dict)]
+    return [{"type": "text", "text": content}]
+
+
+def _clean_user_block_text(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    if "<user_message>" in text:
+        match = re.search(r"<user_message>\s*(.*?)\s*</user_message>", text, re.DOTALL)
+        if match:
+            text = match.group(1)
+    text = re.sub(r"<environment_details>.*?</environment_details>", "", text, flags=re.DOTALL)
+    text = re.sub(r"</?user_message>", "", text)
+    text = text.strip()
+    noise_prefixes = (
+        "[read_file for ",
+        "Command executed in terminal",
+        '{"path":"',
+        '{"path": "',
+        "File: ",
+        "Task was interrupted",
+    )
+    if text.startswith(noise_prefixes):
+        return ""
+    return text
+
+
+def extract_task_history(messages: list, limit: int = 5) -> str:
+    turns: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        blocks = _message_content_blocks(msg)
+        turn_parts: list[str] = []
+        for block in blocks:
+            if block.get("type") != "text":
+                continue
+            raw_text = block.get("text", "")
+            if not isinstance(raw_text, str) or not raw_text:
+                continue
+            if re.search(r"\[read_file for ['\"][^'\"]+['\"]\]", raw_text):
+                turn_parts.append(raw_text.strip())
+                continue
+            cleaned = _clean_user_block_text(raw_text)
+            if cleaned:
+                turn_parts.append(cleaned)
+        if turn_parts:
+            turns.append("\n".join(turn_parts))
+    if not turns:
+        return ""
+    return "\n\n".join(turns[-limit:])
+
+
+def extract_read_files(messages: list) -> list[str]:
+    paths: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for tool_call in msg.get("tool_calls") or []:
+                fn = tool_call.get("function", {})
+                if not isinstance(fn, dict) or fn.get("name") != "read_file":
+                    continue
+                try:
+                    args = json.loads(fn.get("arguments", "{}"))
+                except Exception:
+                    args = {}
+                path = args.get("path")
+                if isinstance(path, str) and path and path not in paths:
+                    paths.append(path)
+        if msg.get("role") == "user":
+            for block in _message_content_blocks(msg):
+                if block.get("type") != "text":
+                    continue
+                raw_text = block.get("text", "")
+                if not isinstance(raw_text, str):
+                    continue
+                match = re.search(r"\[read_file for ['\"]([^'\"]+)['\"]\]", raw_text)
+                if match and match.group(1) not in paths:
+                    paths.append(match.group(1))
+    return paths
+
+
+def extract_written_files(messages: list) -> list[str]:
+    return _written_files(messages)
+
+
+def extract_test_commands(messages: list, task_history: str | None = None) -> list[str]:
+    history = task_history or extract_task_history(messages)
+    return _planned_commands(messages, history)
+
+
+def extract_executed_commands(messages: list) -> list[str]:
+    return _executed_commands(messages)
+
+
+def detect_coding_phase(messages: list, user_query: str, tools: list | None = None) -> CodingPhase:
+    task_history = extract_task_history(messages)
+    last = _last_tool_call(messages)
+    last_output = _last_tool_result_text(messages)
+    read_files = set(extract_read_files(messages))
+    written_files = set(extract_written_files(messages))
+    planned_commands = extract_test_commands(messages, task_history)
+    executed_commands = set(extract_executed_commands(messages))
+    next_command = next((command for command in planned_commands if command not in executed_commands), None)
+    tool_names = _tool_name_set(tools)
+    can_execute = not tools or "execute_command" in tool_names
+
+    if not last:
+        return CodingPhase.PLANNING
+    if last[0] == "read_file":
+        return CodingPhase.FILE_EDIT
+    if last[0] == "write_to_file":
+        if can_execute and next_command:
+            return CodingPhase.TESTING
+        return CodingPhase.COMPLETE
+    if last[0] == "execute_command":
+        if _has_test_failure(last_output):
+            return CodingPhase.FIXING
+        if can_execute and next_command:
+            return CodingPhase.TESTING
+        return CodingPhase.COMPLETE
+    if read_files and not written_files:
+        return CodingPhase.FILE_READ
+    if can_execute and _is_testing_request(user_query) and next_command:
+        return CodingPhase.TESTING
+    return CodingPhase.PLANNING
+
+
+def build_full_context_prompt(
+    phase: CodingPhase,
+    context: dict[str, Any],
+    system_message: str | None = None,
+) -> str:
+    parts = [
+        "FULL PROJECT CONTEXT — multi-turn coding task in progress.",
+        "Preserve all prior work. Continue exactly where left off.",
+        f"Current phase: {phase.value}",
+    ]
+    task_history = context.get("task_history")
+    if task_history:
+        parts.append(f"Task history:\n{task_history}")
+    read_files = context.get("read_files") or []
+    if read_files:
+        parts.append(f"Read files: {', '.join(read_files)}")
+    written_files = context.get("written_files") or []
+    if written_files:
+        parts.append(f"Written files: {', '.join(written_files)}")
+    current_file = context.get("current_file")
+    if isinstance(current_file, dict):
+        path = current_file.get("path", "")
+        content = current_file.get("content", "")
+        if path or content:
+            parts.append(f"Current file {path}:\n{content}")
+    test_output = context.get("test_output")
+    if test_output:
+        parts.append(f"Latest test failure:\n{test_output}")
+    if system_message:
+        snippets = _context_snippets(system_message)
+        if snippets:
+            parts.append("Project context:\n" + "\n\n".join(snippets))
+        else:
+            parts.append(f"Project context:\n{system_message}")
+    parts.append("Respond with ONLY the next concrete action needed.")
+    return "\n\n".join(parts)
+
+
+def coding_shim(
+    messages: list,
+    user_query: str,
+    tools: list | None = None,
+    user_agent: str = "",
+    system_message: str | None = None,
+) -> dict[str, Any]:
+    agent = detect_agent(tools, user_agent=user_agent)
+    task_history = extract_task_history(messages)
+    if agent == Agent.GENERIC:
+        return {
+            "agent": agent,
+            "phase": CodingPhase.PLANNING,
+            "task_history": task_history,
+            "perplexity_prompt": user_query,
+            "response_wrapper": "generic",
+        }
+    if agent == Agent.HERMES:
+        prompt = build_hermes_prompt(user_query, system_message)
+        return {
+            "agent": agent,
+            "phase": CodingPhase.PLANNING,
+            "task_history": task_history,
+            "perplexity_prompt": prompt,
+            "response_wrapper": "hermes_terminal",
+        }
+
+    phase = detect_coding_phase(messages, user_query, tools=tools)
+    context: dict[str, Any] = {
+        "query": user_query,
+        "task_history": task_history,
+        "read_files": extract_read_files(messages),
+        "written_files": extract_written_files(messages),
+        "test_output": _last_tool_result_text(messages),
+    }
+    last = _last_tool_call(messages)
+    if last and last[0] == "read_file":
+        context["current_file"] = {"path": last[1].get("path", ""), "content": _last_tool_result_text(messages)}
+    decision = decide_tool(messages, user_query, tools=tools)
+    prompt = build_perplexity_instruction(decision, user_query, messages=messages) or build_full_context_prompt(phase, context, system_message)
+    return {
+        "agent": agent,
+        "phase": phase,
+        "task_history": task_history,
+        "perplexity_prompt": prompt,
+        "full_context_prompt": build_full_context_prompt(phase, context, system_message),
+        "response_wrapper": "roo_tool",
+        "tool_name": decision.get("tool"),
+        "tool_args": decision.get("args_hint", {}),
+        "decision": decision,
+        "context": context,
     }
