@@ -122,6 +122,27 @@ def test_chat_completions_wraps_roo_requests_as_attempt_completion_tool_call(cli
     }
 
 
+def test_chat_completions_forces_streaming_plain_response_for_hermes(client, cache_mocks, search_mock):
+    search_mock.return_value = "All done."
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"user-agent": "OpenAI/Python 2.32.0"},
+        json={
+            "model": "gpt-5.2",
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "function", "function": {"name": "finish", "parameters": {}}}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = _parse_sse_json_chunks(response.text)
+    assert events[-1]["choices"][0]["finish_reason"] == "stop"
+    assert events[0]["choices"][0]["delta"]["content"] == "All done."
+
+
 def test_chat_completions_roo_request_enters_planning_phase_first(client, cache_mocks, search_mock):
     search_mock.return_value = "Plan: read calculator.py, update it, then run pytest."
 
@@ -929,18 +950,17 @@ def test_openapi_and_swagger_endpoints_are_exposed(client):
     assert "/health" in schema["paths"]
 
 
-def test_api_key_is_required_when_configured(client, monkeypatch):
+def test_v1_models_is_public_even_when_api_keys_are_configured(client, monkeypatch):
     monkeypatch.setattr(settings, "API_KEY_1", "key-1")
     monkeypatch.setattr(settings, "API_KEY_2", "")
     monkeypatch.setattr(settings, "API_KEY_3", "")
 
     response = client.get("/v1/models")
 
-    assert response.status_code == 401
+    assert response.status_code == 200
     payload = response.json()
-    assert "detail" not in payload
-    assert payload["error"]["message"] == "Missing API key"
-    assert response.headers["www-authenticate"] == "Bearer"
+    assert payload["object"] == "list"
+    assert isinstance(payload["data"], list)
 
 
 def test_api_key_allows_access_when_bearer_matches(client, monkeypatch):

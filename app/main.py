@@ -19,7 +19,16 @@ from perplexity.models import _STATIC_MAP, _registry
 
 logger = logging.getLogger("perplexity_proxy")
 access_logger = logging.getLogger("perplexity_proxy.access")
-API_KEY_EXEMPT_PATHS = {"/health", "/v1/models/refresh", "/docs", "/openapi.json", "/redoc"}
+API_KEY_EXEMPT_PATHS = {"/health", "/v1/models", "/v1/models/refresh", "/docs", "/openapi.json", "/redoc"}
+API_KEY_EXEMPT_PREFIXES = ("/v1/models/",)
+
+
+def _is_api_key_exempt_path(path: str) -> bool:
+    if path in API_KEY_EXEMPT_PATHS:
+        return True
+    if path == "/v1/props":
+        return True
+    return any(path.startswith(prefix) for prefix in API_KEY_EXEMPT_PREFIXES)
 
 
 def configure_logging(debug: bool = False) -> None:
@@ -174,7 +183,7 @@ async def lifespan(app: FastAPI):
 
 
 async def api_key_middleware(request: Request, call_next):
-    if request.url.path in API_KEY_EXEMPT_PATHS or not request.url.path.startswith("/v1/"):
+    if _is_api_key_exempt_path(request.url.path) or not request.url.path.startswith("/v1/"):
         return await call_next(request)
 
     configured_keys = _configured_api_keys()

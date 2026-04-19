@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import logging
 import re as _re
@@ -39,11 +40,14 @@ from app.models import (
 )
 from app.streaming import _extract_text, _snapshot_to_delta, chat_completions_stream, completions_stream, responses_stream
 from app.tools.shim import (
+    Agent,
     _last_tool_call,
+    build_hermes_prompt,
     build_perplexity_instruction,
+    detect_agent,
     decide_tool,
-    is_roo_request,
     wrap_as_tool_response,
+    wrap_for_hermes,
 )
 
 router = APIRouter()
@@ -51,6 +55,23 @@ logger = logging.getLogger("app.requests")
 
 def build_model_map():
     return mapper.build_model_map()
+
+
+def _proxy_version() -> str:
+    try:
+        return package_version("perplexity-proxy")
+    except PackageNotFoundError:
+        return "1.0.0"
+
+
+def _props_payload() -> dict[str, Any]:
+    return {
+        "name": "perplexity-proxy",
+        "version": _proxy_version(),
+        "api_key_auth_enabled": bool(settings.API_KEY_1 or settings.API_KEY_2 or settings.API_KEY_3),
+        "authenticated": bool(settings.PERPLEXITY_COOKIES),
+        "model_count": len(mapper.MODEL_MAP),
+    }
 
 
 def _extract_system_message(messages: list[ChatMessage]) -> str | None:
@@ -143,6 +164,9 @@ def _extract_query(messages: list) -> str:
             continue
 
         if isinstance(content, str):
+            text = content.strip()
+            if text.startswith("# Hermes Agent Persona") or text.startswith("# Hermes"):
+                continue
             cleaned = _clean_user_content(content)
             if cleaned:
                 return cleaned
@@ -156,6 +180,9 @@ def _extract_query(messages: list) -> str:
                     continue
                 raw_text = part.get("text", "")
                 if not isinstance(raw_text, str) or not raw_text:
+                    continue
+                stripped = raw_text.strip()
+                if stripped.startswith("# Hermes Agent Persona") or stripped.startswith("# Hermes"):
                     continue
                 cleaned = _clean_user_content(raw_text)
                 if cleaned:
@@ -615,6 +642,38 @@ async def list_models() -> ModelList:
     return model_list
 
 
+@router.get("/v1/models/{model_id}", tags=["Models"], summary="Get model details")
+async def get_model(model_id: str) -> dict[str, Any]:
+    for model in get_model_list():
+        payload = model if isinstance(model, dict) else model.model_dump()
+        if payload.get("id") == model_id:
+            _log_summary("GET /v1/models/{model_id}", 200, model=model_id)
+            return payload
+    _log_summary("GET /v1/models/{model_id}", 404, model=model_id)
+    raise HTTPException(status_code=404, detail="Model not found")
+
+
+@router.get("/v1/props", tags=["Metadata"], summary="Proxy metadata")
+async def get_v1_props() -> dict[str, Any]:
+    payload = _props_payload()
+    _log_summary("GET /v1/props", 200, model_count=payload["model_count"])
+    return payload
+
+
+@router.get("/props", tags=["Metadata"], summary="Proxy metadata")
+async def get_props() -> dict[str, Any]:
+    payload = _props_payload()
+    _log_summary("GET /props", 200, model_count=payload["model_count"])
+    return payload
+
+
+@router.get("/version", tags=["Metadata"], summary="Proxy version")
+async def get_version() -> dict[str, str]:
+    payload = {"version": _proxy_version()}
+    _log_summary("GET /version", 200, version=payload["version"])
+    return payload
+
+
 @router.get(
     "/health",
     response_model=HealthResponse,
@@ -694,9 +753,15 @@ async def refresh_models_endpoint(authorization: str = Header(...)) -> RefreshRe
 async def chat_completions(request: Request):
     try:
         raw_body = await request.json()
+        logger.warning(
+            "AGENT DETECT DEBUG tools=%r",
+            [(t.get("function", {}).get("name") or t.get("name")) for t in (raw_body.get("tools") or [])][:5],
+        )
         raw_messages = raw_body.get("messages") if isinstance(raw_body.get("messages"), list) else []
         req = _normalize_chat_payload(raw_body)
-        roo_mode = is_roo_request(req.tools)
+        user_agent = request.headers.get("user-agent", "")
+        agent = detect_agent(req.tools, user_agent=user_agent)
+        roo_mode = agent == Agent.ROO
         mode, model = resolve(req.model)
         continuation_key = _continuation_transcript_key(req.messages)
         follow_up = await _resolve_follow_up(transcript_key=continuation_key)
@@ -707,7 +772,7 @@ async def chat_completions(request: Request):
             roo_messages = raw_messages
             user_query = _extract_query(roo_messages)
             logger.info("roo extracted query=%s", _summary(user_query))
-            decision = decide_tool(roo_messages, user_query)
+            decision = decide_tool(roo_messages, user_query, tools=req.tools)
             perplexity_q = build_perplexity_instruction(decision, user_query, messages=roo_messages)
             response_id = f"chatcmpl-{uuid.uuid4().hex}"
             prose = decision.get("static_result")
@@ -735,6 +800,7 @@ async def chat_completions(request: Request):
                 stream=req.stream,
                 query=_summary(perplexity_q or user_query),
                 response=_summary(prose or ""),
+                agent=agent.value,
                 roo_tool=decision["tool"],
             )
             if req.stream:
@@ -748,6 +814,37 @@ async def chat_completions(request: Request):
                     media_type="text/event-stream",
                 )
             return JSONResponse(content=wrap_as_tool_response(prose, req.model, response_id, decision))
+        if agent == Agent.HERMES:
+            response_id = f"chatcmpl-{uuid.uuid4().hex}"
+            hermes_query = _extract_query(raw_messages) if raw_messages else ""
+            if not hermes_query:
+                hermes_query = _extract_query([_message_to_dict(message) for message in req.messages])
+            if not hermes_query:
+                hermes_query = query
+            hermes_prompt = build_hermes_prompt(hermes_query, system_prompt)
+            generator = await search(hermes_prompt, mode, model, stream=True, follow_up=follow_up)
+            stream = chat_completions_stream(
+                _wrap_stream_with_follow_up(
+                    generator,
+                    response_id=response_id,
+                    transcript_key=None,
+                    transcript_messages=req.messages,
+                ),
+                req.model,
+                response_id,
+                roo_mode=False,
+            )
+            _log_summary(
+                "POST /v1/chat/completions",
+                200,
+                model=req.model,
+                mode=mode,
+                stream=True,
+                query=_summary(hermes_prompt),
+                response="stream",
+                agent=agent.value,
+            )
+            return StreamingResponse(await _prefetch_first_chunk(stream), media_type="text/event-stream")
         elif system_prompt:
             query = f"{system_prompt}\n\n{query}"
 

@@ -7,6 +7,13 @@ import uuid
 from enum import Enum
 from typing import Any
 
+from app.tools.prompt_builder import _context_snippets
+
+
+class Agent(str, Enum):
+    ROO = "roo"
+    HERMES = "hermes"
+    GENERIC = "generic"
 
 ROO_TOOL_NAMES = frozenset(
     {
@@ -23,30 +30,89 @@ ROO_TOOL_NAMES = frozenset(
     }
 )
 
+HERMES_TOOL_NAMES = frozenset(
+    {
+        "terminal",
+        "write_file",
+        "patch",
+        "execute_code",
+        "clarify",
+        "memory",
+        "skill_view",
+        "skill_manage",
+        "skill_list",
+        "skills_list",
+        "session_search",
+        "todo",
+        "cronjob",
+        "delegate_task",
+        "process",
+        "text_to_speech",
+        "vision_analyze",
+        "read_file",
+        "search_files",
+        "finish",
+        "respond",
+        "final_response",
+        "bash",
+        "think",
+        "str_replace_editor",
+        "computer",
+        "code_interpreter",
+        "browser_back",
+        "browser_click",
+        "browser_console",
+        "browser_get_images",
+        "browser_navigate",
+        "browser_press",
+        "browser_scroll",
+        "browser_snapshot",
+        "browser_type",
+        "browser_vision",
+    }
+)
+
+FAILURE_MARKERS = (
+    "error collecting",
+    "traceback",
+    "importerror",
+    "assertionerror",
+    "failed",
+    "error:",
+    "exception",
+    "no module named",
+)
+
 
 class Phase(str, Enum):
     PLANNING = "planning"
-    READING = "reading"
     GENERATING = "generating"
     TESTING = "testing"
     FIXING = "fixing"
     COMPLETE = "complete"
 
 
+def detect_agent(tools: list | None, user_agent: str = "") -> Agent:
+    if "RooCode/" in user_agent:
+        return Agent.ROO
+
+    names = _tool_name_set(tools)
+    if not names:
+        return Agent.GENERIC
+
+    if names & HERMES_TOOL_NAMES:
+        return Agent.HERMES
+    if any(name.startswith("browser_") and name != "browser_action" for name in names):
+        return Agent.HERMES
+    if names & ROO_TOOL_NAMES:
+        return Agent.ROO
+    if "OpenAI/Python" in user_agent and tools:
+        return Agent.HERMES
+    return Agent.GENERIC
+
+
 def is_roo_request(tools: list | None) -> bool:
-    if not tools:
-        return False
-    for tool in tools:
-        name = None
-        if isinstance(tool, dict):
-            function = tool.get("function", {})
-            if isinstance(function, dict):
-                name = function.get("name") or tool.get("name")
-            else:
-                name = tool.get("name")
-        if name in ROO_TOOL_NAMES:
-            return True
-    return False
+    return detect_agent(tools) == Agent.ROO
 
 
 def _last_tool_call(messages: list) -> tuple[str, dict] | None:
@@ -132,8 +198,21 @@ def _task_text(messages: list, user_query: str) -> str:
             text = block.get("text", "")
             if not isinstance(text, str):
                 continue
-            cleaned = re.sub(r"<environment_details>.*?</environment_details>", "", text, flags=re.DOTALL).strip()
-            cleaned = re.sub(r"</?user_message>", "", cleaned).strip()
+            if "<user_message>" in text:
+                match = re.search(r"<user_message>\s*(.*?)\s*</user_message>", text, re.DOTALL)
+                cleaned = match.group(1).strip() if match else ""
+            else:
+                cleaned = text.strip()
+                noise_prefixes = (
+                    "[read_file for ",
+                    "Command executed in terminal",
+                    '{"path":"',
+                    '{"path": "',
+                    "File: ",
+                    "Task was interrupted",
+                )
+                if cleaned.startswith(noise_prefixes):
+                    cleaned = ""
             if not cleaned:
                 continue
             if cleaned not in parts:
@@ -141,6 +220,56 @@ def _task_text(messages: list, user_query: str) -> str:
     if user_query and user_query not in parts:
         parts.append(user_query)
     return "\n".join(parts)
+
+
+def _is_testing_request(text: str) -> bool:
+    lowered = text.lower().strip()
+    if not lowered:
+        return False
+    if any(
+        phrase in lowered
+        for phrase in (
+            "create ",
+            "edit ",
+            "modify ",
+            "add ",
+            "fix ",
+            "implement ",
+            "write ",
+        )
+    ):
+        return False
+    return any(
+        phrase in lowered
+        for phrase in (
+            "test it",
+            "run tests",
+            "run pytest",
+            "pytest",
+            "test the code",
+            "test again",
+            "run the tests",
+            "please run pytest",
+        )
+    )
+
+
+def _is_fix_request(text: str) -> bool:
+    lowered = text.lower().strip()
+    if not lowered:
+        return False
+    return any(
+        phrase in lowered
+        for phrase in (
+            "fix",
+            "debug",
+            "repair",
+            "search bugs",
+            "search bug",
+            "diagnosis",
+            "confirm the diagnosis",
+        )
+    )
 
 
 def _written_files(messages: list) -> list[str]:
@@ -203,6 +332,98 @@ def _requested_commands(text: str) -> list[str]:
     return commands
 
 
+def _assistant_completion_results(messages: list) -> list[str]:
+    results: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tool_call in msg.get("tool_calls") or []:
+            fn = tool_call.get("function", {})
+            if not isinstance(fn, dict) or fn.get("name") != "attempt_completion":
+                continue
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except Exception:
+                args = {}
+            result = args.get("result")
+            if isinstance(result, str) and result.strip():
+                results.append(result)
+    return results
+
+
+def _executed_commands(messages: list) -> list[str]:
+    commands: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tool_call in msg.get("tool_calls") or []:
+            fn = tool_call.get("function", {})
+            if not isinstance(fn, dict) or fn.get("name") != "execute_command":
+                continue
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except Exception:
+                args = {}
+            command = args.get("command")
+            if isinstance(command, str) and command.strip() and command.strip() not in commands:
+                commands.append(command.strip())
+    return commands
+
+
+def _commands_from_plan_text(text: str) -> list[str]:
+    commands = _requested_commands(text)
+    if commands:
+        return commands
+    inferred: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = re.match(r"^(?:[-*]|\d+[.)])\s*(.+)$", stripped)
+        candidate = match.group(1).strip() if match else stripped
+        if not candidate:
+            continue
+        if re.match(r"^(pytest|python3?\s+-m\s+pytest|python3?\s+-c|cargo test|npm test|npx vitest run)\b", candidate):
+            if candidate not in inferred:
+                inferred.append(candidate)
+    return inferred
+
+
+def _planned_commands(messages: list, task_text: str) -> list[str]:
+    commands: list[str] = []
+    for result in _assistant_completion_results(messages):
+        for command in _commands_from_plan_text(result):
+            if command not in commands:
+                commands.append(command)
+    for command in _requested_commands(task_text):
+        if command not in commands:
+            commands.append(command)
+    return commands
+
+
+def _default_test_command(task_text: str, messages: list) -> str | None:
+    requested = _planned_commands(messages, task_text)
+    if requested:
+        return requested[0]
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tool_call in msg.get("tool_calls") or []:
+            fn = tool_call.get("function", {})
+            if not isinstance(fn, dict) or fn.get("name") != "execute_command":
+                continue
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except Exception:
+                args = {}
+            command = args.get("command")
+            if isinstance(command, str) and command.strip():
+                return command.strip()
+    if ".py" in task_text or "python" in task_text or "pytest" in task_text:
+        return "python3 -m pytest -v"
+    return None
+
+
 def _last_tool_result_text(messages: list) -> str:
     for msg in reversed(messages):
         if not isinstance(msg, dict):
@@ -237,17 +458,7 @@ def _has_test_failure(output: str) -> bool:
         return False
     if "0 failed" in lowered and "errors" not in lowered and "traceback" not in lowered:
         return False
-    failure_markers = (
-        "error collecting",
-        "traceback",
-        "importerror",
-        "assertionerror",
-        "failed",
-        "error:",
-        "exception",
-        "no module named",
-    )
-    return any(marker in lowered for marker in failure_markers)
+    return any(marker in lowered for marker in FAILURE_MARKERS)
 
 
 def _failing_file_from_output(output: str) -> str | None:
@@ -271,7 +482,22 @@ def _failing_file_from_output(output: str) -> str | None:
     return None
 
 
-def detect_phase(messages: list, user_query: str) -> tuple[Phase, dict[str, Any]]:
+def _tool_name_set(tools: list | None) -> set[str]:
+    names: set[str] = set()
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function", {})
+        if isinstance(function, dict):
+            name = function.get("name") or tool.get("name")
+        else:
+            name = tool.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
+
+
+def detect_phase(messages: list, user_query: str, tools: list | None = None) -> tuple[Phase, dict[str, Any]]:
     task_text = _task_text(messages, user_query)
     last = _last_tool_call(messages)
     has_injected, injected_path = _has_injected_file_content(messages)
@@ -280,7 +506,18 @@ def detect_phase(messages: list, user_query: str) -> tuple[Phase, dict[str, Any]
     mentioned_files = _mentioned_files(task_text)
     written_files = set(_written_files(messages))
     read_files = set(_read_files(messages))
-    requested_commands = _requested_commands(task_text)
+    planned_commands = _planned_commands(messages, task_text)
+    executed_commands = set(_executed_commands(messages))
+    next_command = next((command for command in planned_commands if command not in executed_commands), None)
+    tool_names = _tool_name_set(tools)
+    can_execute = not tools or "execute_command" in tool_names
+
+    if can_execute and _is_testing_request(user_query) and not (
+        last and last[0] == "execute_command" and _has_test_failure(last_output)
+    ):
+        command = next_command or _default_test_command(task_text, messages)
+        if command:
+            return Phase.TESTING, {"command": command, "query": task_text or user_query}
 
     if has_injected:
         phase = Phase.FIXING if last and last[0] == "execute_command" and _has_test_failure(last_output) else Phase.GENERATING
@@ -289,6 +526,7 @@ def detect_phase(messages: list, user_query: str) -> tuple[Phase, dict[str, Any]
             "current_content": injected_block,
             "query": task_text or user_query,
             "output": last_output,
+            "action": "write_to_file",
         }
 
     if last is None:
@@ -299,14 +537,15 @@ def detect_phase(messages: list, user_query: str) -> tuple[Phase, dict[str, Any]
             "file": last[1].get("path", ""),
             "current_content": last_output,
             "query": task_text or user_query,
+            "action": "write_to_file",
         }
 
     if last[0] == "write_to_file":
         pending_files = [path for path in mentioned_files if path not in written_files and path not in read_files]
         if pending_files:
-            return Phase.READING, {"path": pending_files[0], "query": task_text or user_query}
-        if requested_commands:
-            return Phase.TESTING, {"command": requested_commands[0], "query": task_text or user_query}
+            return Phase.GENERATING, {"path": pending_files[0], "query": task_text or user_query, "action": "read_file"}
+        if can_execute and next_command:
+            return Phase.TESTING, {"command": next_command, "query": task_text or user_query}
         return Phase.COMPLETE, {
             "written": last[1].get("path", ""),
             "output": last_output,
@@ -314,19 +553,25 @@ def detect_phase(messages: list, user_query: str) -> tuple[Phase, dict[str, Any]
 
     if last[0] == "execute_command":
         if _has_test_failure(last_output):
-            failing_file = _failing_file_from_output(last_output)
-            if failing_file and failing_file not in read_files:
-                return Phase.READING, {
-                    "path": failing_file,
+            if _is_fix_request(user_query):
+                failing_file = _failing_file_from_output(last_output)
+                if failing_file and failing_file not in read_files:
+                    return Phase.FIXING, {
+                        "path": failing_file,
+                        "query": task_text or user_query,
+                        "output": last_output,
+                        "action": "read_file",
+                    }
+                return Phase.FIXING, {
+                    "file": failing_file or _mentions_file(task_text) or "",
+                    "current_content": injected_block or last_output,
                     "query": task_text or user_query,
                     "output": last_output,
+                    "action": "write_to_file",
                 }
-            return Phase.FIXING, {
-                "file": failing_file or _mentions_file(task_text) or "",
-                "current_content": injected_block or last_output,
-                "query": task_text or user_query,
-                "output": last_output,
-            }
+            return Phase.COMPLETE, {"output": last_output, "failed": True}
+        if can_execute and next_command:
+            return Phase.TESTING, {"command": next_command, "query": task_text or user_query}
         return Phase.COMPLETE, {"output": last_output}
 
     return Phase.PLANNING, {"query": task_text or user_query}
@@ -335,14 +580,29 @@ def detect_phase(messages: list, user_query: str) -> tuple[Phase, dict[str, Any]
 def build_phase_prompt(phase: Phase, context: dict[str, Any], system_message: str | None = None) -> str | None:
     if phase == Phase.PLANNING:
         query = context.get("query", "")
-        return (
-            "You are a coding assistant. Analyze this task and provide a concise implementation plan.\n\n"
-            f"Task: {query}\n\n"
-            "Identify the files to create or edit, the order to handle them, and the test command to run at the end. "
-            "Be concrete and actionable."
+        parts = [
+            "You are a coding assistant. Analyze this task and provide a concise implementation plan.",
+            "Plan and implement the task deterministically, one file and one command at a time.",
+            "Use the project context below to infer the language, framework, test runner, and file structure. Do not assume JavaScript if the context indicates another stack.",
+        ]
+        if system_message:
+            snippets = _context_snippets(system_message)
+            if snippets:
+                parts.append("Project context:\n" + "\n\n".join(snippets))
+            else:
+                parts.append(f"Project context:\n{system_message}")
+        parts.append(f"Task: {query}")
+        parts.append(
+            "Identify the files to create or edit, the order to handle them, and the exact shell commands to run in order."
         )
+        parts.append(
+            "When listing commands, keep them in execution order and wrap each full command in backticks so they can be reused exactly."
+        )
+        return "\n\n".join(parts)
 
     if phase == Phase.GENERATING:
+        if context.get("action") == "read_file":
+            return None
         file_path = context.get("file", "")
         query = context.get("query", "")
         current_content = context.get("current_content", "")
@@ -358,6 +618,8 @@ def build_phase_prompt(phase: Phase, context: dict[str, Any], system_message: st
         return "\n\n".join(parts)
 
     if phase == Phase.FIXING:
+        if context.get("action") == "read_file":
+            return None
         file_path = context.get("file", "")
         query = context.get("query", "")
         current_content = context.get("current_content", "")
@@ -376,8 +638,25 @@ def build_phase_prompt(phase: Phase, context: dict[str, Any], system_message: st
     return None
 
 
-def decide_tool(messages: list, user_query: str) -> dict[str, Any]:
-    phase, context = detect_phase(messages, user_query)
+def build_hermes_prompt(user_query: str, system_message: str | None = None) -> str:
+    persona = ""
+    if system_message:
+        lines = system_message.splitlines()
+        persona_lines = [line.strip() for line in lines[:20] if line.strip() and not line.lstrip().startswith("#")]
+        if persona_lines:
+            persona = " ".join(persona_lines[:3])
+
+    parts = [
+        "Reply in plain text only. No markdown, no bullet points, no headers, no citation numbers, no links.",
+        "Write as if outputting to a terminal.",
+    ]
+    if persona:
+        parts.append(f"Persona context: {persona}")
+    parts.append(f"User message: {user_query}")
+    return "\n\n".join(parts)
+
+
+def _phase_to_roo_decision(phase: Phase, context: dict[str, Any]) -> dict[str, Any]:
     if phase == Phase.PLANNING:
         return {
             "tool": "attempt_completion",
@@ -386,15 +665,16 @@ def decide_tool(messages: list, user_query: str) -> dict[str, Any]:
             "phase": phase.value,
             "phase_context": context,
         }
-    if phase == Phase.READING:
-        return {
-            "tool": "read_file",
-            "args_hint": {"path": context.get("path", "")},
-            "perplexity_instruction": None,
-            "phase": phase.value,
-            "phase_context": context,
-        }
     if phase in {Phase.GENERATING, Phase.FIXING}:
+        action = context.get("action")
+        if action == "read_file":
+            return {
+                "tool": "read_file",
+                "args_hint": {"path": context.get("path", "")},
+                "perplexity_instruction": None,
+                "phase": phase.value,
+                "phase_context": context,
+            }
         return {
             "tool": "write_to_file",
             "args_hint": {"path": context.get("file", "")},
@@ -414,10 +694,19 @@ def decide_tool(messages: list, user_query: str) -> dict[str, Any]:
         "tool": "attempt_completion",
         "args_hint": {},
         "perplexity_instruction": None,
-        "static_result": context.get("output") or f"Completed {context.get('written', 'the task')}".strip(),
+        "static_result": (
+            f"Command failed.\n{context.get('output', '').strip()}"
+            if context.get("failed")
+            else context.get("output") or f"Completed {context.get('written', 'the task')}".strip()
+        ),
         "phase": phase.value,
         "phase_context": context,
     }
+
+
+def decide_tool(messages: list, user_query: str, tools: list | None = None) -> dict[str, Any]:
+    phase, context = detect_phase(messages, user_query, tools=tools)
+    return _phase_to_roo_decision(phase, context)
 
 
 def build_perplexity_instruction(decision: dict[str, Any], user_query: str, messages: list | None = None) -> str | None:
@@ -428,7 +717,16 @@ def build_perplexity_instruction(decision: dict[str, Any], user_query: str, mess
         phase = Phase(phase_name)
     except ValueError:
         return decision.get("perplexity_instruction")
-    return build_phase_prompt(phase, decision.get("phase_context", {}), None)
+    system_message = None
+    if messages:
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "system":
+                continue
+            content = message.get("content", "")
+            if isinstance(content, str) and content.strip():
+                system_message = content
+                break
+    return build_phase_prompt(phase, decision.get("phase_context", {}), system_message)
 
 
 def wrap_as_tool_response(
@@ -441,18 +739,22 @@ def wrap_as_tool_response(
     args_hint = decision.get("args_hint", {})
 
     if tool_name == "write_to_file":
-        content = prose or ""
-        arguments: dict[str, Any] = {
-            "path": args_hint.get("path", ""),
-            "content": content,
-            "line_count": len(content.splitlines()),
-        }
+        content = (prose or "").strip("\n")
+        if not content.strip():
+            tool_name = "attempt_completion"
+            arguments = {"result": "Cannot write empty content."}
+        else:
+            arguments = {
+                "path": args_hint.get("path", ""),
+                "content": content,
+                "line_count": len(content.splitlines()),
+            }
     elif tool_name == "read_file":
         arguments = {"path": args_hint.get("path", "")}
     elif tool_name == "execute_command":
         arguments = {"command": args_hint.get("command", "")}
     else:
-        arguments = {"result": prose or ""}
+        arguments = {"result": prose or "Ready."}
 
     tool_call = {
         "id": f"call_{uuid.uuid4().hex[:24]}",
@@ -474,6 +776,35 @@ def wrap_as_tool_response(
                 "message": {
                     "role": "assistant",
                     "content": None,
+                    "tool_calls": [tool_call],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+def wrap_for_hermes(prose: str | None, model: str, req_id: str) -> dict[str, Any]:
+    tool_call = {
+        "id": f"call_{uuid.uuid4().hex[:24]}",
+        "type": "function",
+        "function": {
+            "name": "terminal",
+            "arguments": json.dumps({"command": "echo", "output": prose or "Ready."}),
+        },
+    }
+    return {
+        "id": req_id,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": prose or "Ready.",
                     "tool_calls": [tool_call],
                 },
                 "finish_reason": "tool_calls",

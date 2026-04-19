@@ -72,7 +72,7 @@ Client (opencode / Cursor / any OpenAI-compatible tool)
 - **LRU response cache** — in-memory cache with configurable TTL and max size
 - **Multi-worker** — runs with `gunicorn` + `uvicorn` workers for horizontal concurrency
 - **Cookie-based auth** — injects Perplexity session cookies for Pro/Reasoning/Deep Research access
-- **Inbound API-key auth** — optional bearer-token protection for all `/v1/*` endpoints
+- **Inbound API-key auth** — optional bearer-token protection for protected `/v1/*` endpoints
 - **Anonymous fallback** — works without cookies in `auto` mode
 - **`/v1/models` endpoint** — dynamically exposes all available models for client discovery
 - **`/v1/models/refresh` endpoint** — refreshes the model map without restarting the server
