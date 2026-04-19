@@ -64,6 +64,16 @@ def _mentions_file(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _mentioned_files(text: str) -> list[str]:
+    """Return unique filenames mentioned in text, preserving order."""
+    paths: list[str] = []
+    for match in re.finditer(r"""['"`]?([a-zA-Z0-9_/.-]+\.[a-zA-Z]{1,10})['"`]?""", text):
+        path = match.group(1)
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
 _EDIT_KEYWORDS = frozenset(
     {
         "add",
@@ -88,9 +98,37 @@ _EDIT_KEYWORDS = frozenset(
 )
 
 
+_CREATE_KEYWORDS = frozenset(
+    {
+        "create",
+        "make",
+        "new",
+        "generate",
+        "scaffold",
+        "initialize",
+        "init",
+        "build",
+        "write",
+    }
+)
+
+
+_CMD_KEYWORDS = frozenset({"run", "execute", "test", "pytest", "install", "check"})
+
+
 def _is_edit_intent(text: str) -> bool:
     words = set(re.findall(r"\b\w+\b", text.lower()))
     return bool(words & _EDIT_KEYWORDS)
+
+
+def _is_create_intent(text: str) -> bool:
+    words = set(re.findall(r"\b\w+\b", text.lower()))
+    return bool(words & _CREATE_KEYWORDS)
+
+
+def _is_command_intent(text: str) -> bool:
+    words = set(re.findall(r"\b\w+\b", text.lower()))
+    return bool(words & _CMD_KEYWORDS)
 
 
 def _has_injected_file_content(messages: list) -> tuple[bool, str]:
@@ -135,13 +173,107 @@ def _injected_file_block(messages: list | None) -> str | None:
     return None
 
 
+def _task_text(messages: list, user_query: str) -> str:
+    """Build a stable task description from user messages plus the latest extracted query."""
+    parts: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        blocks = content if isinstance(content, list) else [{"type": "text", "text": content}]
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            text = block.get("text", "")
+            if not isinstance(text, str):
+                continue
+            cleaned = re.sub(r"<environment_details>.*?</environment_details>", "", text, flags=re.DOTALL).strip()
+            cleaned = re.sub(r"</?user_message>", "", cleaned).strip()
+            if not cleaned:
+                continue
+            if cleaned not in parts:
+                parts.append(cleaned)
+    if user_query and user_query not in parts:
+        parts.append(user_query)
+    return "\n".join(parts)
+
+
+def _written_files(messages: list) -> list[str]:
+    paths: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tool_call in msg.get("tool_calls") or []:
+            fn = tool_call.get("function", {})
+            if not isinstance(fn, dict) or fn.get("name") != "write_to_file":
+                continue
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except Exception:
+                continue
+            path = args.get("path")
+            if isinstance(path, str) and path and path not in paths:
+                paths.append(path)
+    return paths
+
+
+def _executed_commands(messages: list) -> list[str]:
+    commands: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tool_call in msg.get("tool_calls") or []:
+            fn = tool_call.get("function", {})
+            if not isinstance(fn, dict) or fn.get("name") != "execute_command":
+                continue
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except Exception:
+                continue
+            command = args.get("command")
+            if isinstance(command, str) and command and command not in commands:
+                commands.append(command)
+    return commands
+
+
+def _requested_commands(text: str) -> list[str]:
+    commands: list[str] = []
+    for match in re.finditer(r"`([^`]+)`", text):
+        command = match.group(1).strip()
+        if command and _is_command_intent(command) and command not in commands:
+            commands.append(command)
+    return commands
+
+
+def _next_pending_file(user_query: str, messages: list) -> str | None:
+    written = set(_written_files(messages))
+    for path in _mentioned_files(user_query):
+        if path not in written:
+            return path
+    return None
+
+
+def _next_pending_command(user_query: str, messages: list) -> str | None:
+    executed = set(_executed_commands(messages))
+    for command in _requested_commands(user_query):
+        if command not in executed:
+            return command
+    return None
+
+
 def decide_tool(messages: list, user_query: str) -> dict:
     """
     Decide which Roo tool to invoke based on the latest conversation state.
     """
+    task_text = _task_text(messages, user_query)
     query_lower = user_query.lower()
+    task_lower = task_text.lower()
+    last = _last_tool_call(messages)
+    next_file = _next_pending_file(task_text, messages) if task_text else None
+    next_command = _next_pending_command(task_text, messages) if task_text else None
+
     has_injected, injected_path = _has_injected_file_content(messages)
-    if has_injected and _is_edit_intent(query_lower):
+    if has_injected and (_is_edit_intent(query_lower) or _is_edit_intent(task_lower)):
         return {
             "tool": "write_to_file",
             "args_hint": {"path": injected_path},
@@ -153,8 +285,25 @@ def decide_tool(messages: list, user_query: str) -> dict:
             "content_source": "injected_read",
         }
 
-    last = _last_tool_call(messages)
     if last and last[0] == "write_to_file":
+        if next_file:
+            return {
+                "tool": "write_to_file",
+                "args_hint": {"path": next_file},
+                "perplexity_instruction": (
+                    f"Return ONLY the complete new or updated content of {next_file}. "
+                    f"No explanation, no markdown, no code fences, no filename header. "
+                    f"Just the raw file content."
+                ),
+                "content_source": "multi_file",
+            }
+        if next_command:
+            return {
+                "tool": "execute_command",
+                "args_hint": {"command": next_command},
+                "perplexity_instruction": None,
+                "content_source": "multi_file",
+            }
         written_path = last[1].get("path", "the file")
         return {
             "tool": "attempt_completion",
@@ -166,7 +315,7 @@ def decide_tool(messages: list, user_query: str) -> dict:
 
     if last and last[0] == "read_file":
         file_path = last[1].get("path", "")
-        if _is_edit_intent(query_lower) or file_path:
+        if _is_edit_intent(task_lower) or _is_create_intent(task_lower) or file_path:
             return {
                 "tool": "write_to_file",
                 "args_hint": {"path": file_path},
@@ -178,8 +327,20 @@ def decide_tool(messages: list, user_query: str) -> dict:
                 "content_source": "assistant_read",
             }
 
-    mentioned_file = _mentions_file(user_query)
-    if mentioned_file and _is_edit_intent(query_lower):
+    mentioned_file = _mentions_file(task_text)
+    if mentioned_file and _is_create_intent(task_lower):
+        return {
+            "tool": "write_to_file",
+            "args_hint": {"path": mentioned_file},
+            "perplexity_instruction": (
+                f"Return ONLY the complete new content of {mentioned_file}. "
+                f"No explanation, no markdown, no code fences, no filename header. "
+                f"Just the raw file content."
+            ),
+            "content_source": "request",
+        }
+
+    if mentioned_file and _is_edit_intent(task_lower):
         if not last or last[0] != "read_file":
             return {
                 "tool": "read_file",
@@ -187,6 +348,14 @@ def decide_tool(messages: list, user_query: str) -> dict:
                 "perplexity_instruction": None,
                 "content_source": "request",
             }
+
+    if next_command:
+        return {
+            "tool": "execute_command",
+            "args_hint": {"command": next_command},
+            "perplexity_instruction": None,
+            "content_source": "request",
+        }
 
     if user_query.strip().endswith("?") and len(user_query) < 200:
         return {
@@ -245,6 +414,8 @@ def wrap_as_tool_response(
         arguments = {"result": prose or ""}
     elif tool_name == "ask_followup_question":
         arguments = {"question": prose or "", "follow_up": []}
+    elif tool_name == "execute_command":
+        arguments = {"command": args_hint.get("command", "")}
     else:
         arguments = dict(args_hint)
 

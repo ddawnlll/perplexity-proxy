@@ -78,6 +78,117 @@ def test_decide_tool_returns_attempt_completion_after_write_to_file():
     assert decision["content_source"] == "post_write"
 
 
+def test_decide_tool_creates_new_file_without_read():
+    decision = decide_tool([], "create calculator/core.py with add and divide functions")
+
+    assert decision["tool"] == "write_to_file"
+    assert decision["args_hint"]["path"] == "calculator/core.py"
+    assert decision["content_source"] == "request"
+
+
+def test_decide_tool_moves_to_next_pending_file_after_write():
+    user_query = (
+        "Create calculator/core.py and calculator/history.py, then run `python -m pytest calculator/tests/ -v`."
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "write_to_file",
+                        "arguments": "{\"path\":\"calculator/core.py\",\"content\":\"pass\\n\",\"line_count\":1}",
+                    }
+                }
+            ],
+        }
+    ]
+
+    decision = decide_tool(messages, user_query)
+
+    assert decision["tool"] == "write_to_file"
+    assert decision["args_hint"]["path"] == "calculator/history.py"
+    assert decision["content_source"] == "multi_file"
+
+
+def test_decide_tool_uses_task_history_when_latest_turn_is_only_environment_details():
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "<user_message>Create calculator/core.py and calculator/history.py, then run `python -m pytest calculator/tests/ -v`.</user_message>",
+                }
+            ],
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "write_to_file",
+                        "arguments": "{\"path\":\"calculator/core.py\",\"content\":\"pass\\n\",\"line_count\":1}",
+                    }
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "<environment_details>cwd=/tmp/project</environment_details>"}],
+        },
+    ]
+
+    decision = decide_tool(messages, "")
+
+    assert decision["tool"] == "write_to_file"
+    assert decision["args_hint"]["path"] == "calculator/history.py"
+    assert decision["content_source"] == "multi_file"
+
+
+def test_decide_tool_runs_next_pending_command_after_files_written():
+    user_query = (
+        "Create calculator/core.py and calculator/history.py, then run `python -m pytest calculator/tests/ -v`."
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "write_to_file",
+                        "arguments": "{\"path\":\"calculator/core.py\",\"content\":\"pass\\n\",\"line_count\":1}",
+                    }
+                }
+            ],
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "write_to_file",
+                        "arguments": "{\"path\":\"calculator/history.py\",\"content\":\"pass\\n\",\"line_count\":1}",
+                    }
+                }
+            ],
+        },
+    ]
+
+    decision = decide_tool(messages, user_query)
+
+    assert decision["tool"] == "execute_command"
+    assert decision["args_hint"]["command"] == "python -m pytest calculator/tests/ -v"
+    assert decision["content_source"] == "multi_file"
+
+
+def test_decide_tool_detects_execute_command_request():
+    decision = decide_tool([], "run `python -m pytest calculator/tests/ -v`")
+
+    assert decision["tool"] == "execute_command"
+    assert decision["args_hint"]["command"] == "python -m pytest calculator/tests/ -v"
+
+
 def test_build_perplexity_instruction_includes_injected_file_block():
     messages = [
         {
@@ -120,3 +231,16 @@ def test_wrap_as_tool_response_uses_decision_directly():
     assert args["path"] == "calculator.py"
     assert "return a + b" in args["content"]
     assert args["line_count"] == 2
+
+
+def test_wrap_as_tool_response_handles_execute_command():
+    payload = wrap_as_tool_response(
+        None,
+        "gpt-5.2",
+        "chatcmpl-123",
+        {"tool": "execute_command", "args_hint": {"command": "python -m pytest calculator/tests/ -v"}},
+    )
+    args = json.loads(payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+
+    assert payload["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "execute_command"
+    assert args["command"] == "python -m pytest calculator/tests/ -v"

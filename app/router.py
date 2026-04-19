@@ -347,15 +347,20 @@ def _build_query_from_messages(messages: list[ChatMessage]) -> tuple[str, str | 
     return query, system_prompt
 
 
-def _serialize_messages(messages: list[ChatMessage]) -> list[dict[str, str]]:
+def _serialize_messages(
+    messages: list[ChatMessage],
+    *,
+    include_tool_messages: bool = True,
+) -> list[dict[str, str]]:
     serialized: list[dict[str, str]] = []
     for message in messages:
-        serialized.append(
-            {
-                "role": str(getattr(message, "role", "")).strip(),
-                "content": _extract_content_str(getattr(message, "content", None)),
-            }
-        )
+        role = str(getattr(message, "role", "")).strip()
+        if not include_tool_messages and role == "tool":
+            continue
+        content = _extract_content_str(getattr(message, "content", None))
+        if role == "user":
+            content = _clean_user_content(content)
+        serialized.append({"role": role, "content": content})
     return serialized
 
 
@@ -370,11 +375,20 @@ def _continuation_transcript_key(messages: list[ChatMessage]) -> str | None:
         return None
     if not any(str(getattr(message, "role", "")).strip() == "assistant" for message in continuation):
         return None
-    return follow_up_store.make_transcript_key(_serialize_messages(continuation))
+    return follow_up_store.make_transcript_key(
+        _serialize_messages(continuation, include_tool_messages=False)
+    )
 
 
 def _assistant_transcript_key(messages: list[ChatMessage], assistant_text: str) -> str:
     transcript = _serialize_messages(messages) + [{"role": "assistant", "content": assistant_text}]
+    return follow_up_store.make_transcript_key(transcript)
+
+
+def _roo_assistant_transcript_key(messages: list[ChatMessage]) -> str:
+    transcript = _serialize_messages(messages, include_tool_messages=False) + [
+        {"role": "assistant", "content": ""}
+    ]
     return follow_up_store.make_transcript_key(transcript)
 
 
@@ -698,6 +712,7 @@ async def chat_completions(request: Request):
             perplexity_q = build_perplexity_instruction(decision, user_query, messages=roo_messages)
             response_id = f"chatcmpl-{uuid.uuid4().hex}"
             prose = decision.get("static_result")
+            raw_result: Any = None
             if perplexity_q is not None:
                 if decision["tool"] == "write_to_file" and decision.get("content_source") != "injected_read":
                     system_prompt = _extract_system_message(roo_messages)
@@ -706,8 +721,13 @@ async def chat_completions(request: Request):
                         system_message=system_prompt,
                         messages=roo_messages,
                     )
-                prose = await search(perplexity_q, mode, model, stream=False, follow_up=follow_up)
-                prose = _strip_citations(_extract_result_text(prose))
+                raw_result = await search(perplexity_q, mode, model, stream=False, follow_up=follow_up)
+                prose = _strip_citations(_extract_result_text(raw_result))
+                await _store_follow_up(
+                    response_id=response_id,
+                    transcript_key=_roo_assistant_transcript_key(req.messages),
+                    payload=raw_result,
+                )
             logger.warning(
                 "ROO TURN AUDIT | tool=%s | path=%s | prose_len=%d | last_tool=%s",
                 decision["tool"],

@@ -584,6 +584,77 @@ def test_chat_multi_turn_reuses_follow_up_from_previous_assistant_turn(client, c
     }
 
 
+def test_roo_chat_multi_turn_reuses_follow_up_across_tool_turns(client, cache_mocks, search_mock):
+    search_mock.side_effect = [
+        {"answer": "def add(a, b):\n    return a + b\n", "backend_uuid": "backend-1", "attachments": []},
+        {"answer": "from dataclasses import dataclass\n", "backend_uuid": "backend-2", "attachments": []},
+    ]
+
+    first = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.2",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "<user_message>\ncreate calculator/core.py and calculator/history.py\n</user_message>",
+                        },
+                        {"type": "text", "text": "<environment_details>cwd=/tmp/project</environment_details>"},
+                    ],
+                }
+            ],
+            "tools": [{"type": "function", "function": {"name": "attempt_completion", "parameters": {}}}],
+            "stream": False,
+        },
+    )
+    assert first.status_code == 200
+    first_call = first.json()["choices"][0]["message"]["tool_calls"][0]
+    assert first_call["function"]["name"] == "write_to_file"
+
+    second = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.2",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "<user_message>\ncreate calculator/core.py and calculator/history.py\n</user_message>",
+                        },
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "tool_calls": [first_call],
+                },
+                {"role": "tool", "content": "File written"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "<environment_details>cwd=/tmp/project</environment_details>"},
+                    ],
+                },
+            ],
+            "tools": [{"type": "function", "function": {"name": "attempt_completion", "parameters": {}}}],
+            "stream": False,
+        },
+    )
+    assert second.status_code == 200
+    assert search_mock.await_count == 2
+    second_call = second.json()["choices"][0]["message"]["tool_calls"][0]
+    assert second_call["function"]["name"] == "write_to_file"
+    assert json.loads(second_call["function"]["arguments"])["path"] == "calculator/history.py"
+    assert search_mock.await_args_list[1].kwargs["follow_up"] == {
+        "backend_uuid": "backend-1",
+        "attachments": [],
+    }
+
+
 def test_streamed_responses_store_follow_up_for_previous_response_id(client, cache_mocks, search_mock):
     async def streamed_first():
         yield {"answer": "H", "backend_uuid": "backend-1", "attachments": ["file-1"]}
