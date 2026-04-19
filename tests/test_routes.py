@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.config import settings
 from app.main import app
+from app.router import _clean_user_content, _extract_query
 from app.models import ChatResponse, ResponsesResponse
 from app.state import follow_up_store
 from perplexity.exceptions import AuthenticationError, PerplexityError, RateLimitError
@@ -19,6 +20,9 @@ def client(mocker):
     mocker.patch("app.main.init_client", new=AsyncMock(return_value=None))
     mocker.patch("app.main.close_client", new=AsyncMock(return_value=None))
     mocker.patch("app.main.check_perplexity_session", new=AsyncMock(return_value={"ok": True, "authenticated": True, "status_code": 200}))
+    settings.API_KEY_1 = ""
+    settings.API_KEY_2 = ""
+    settings.API_KEY_3 = ""
     with TestClient(app) as test_client:
         yield test_client
 
@@ -116,6 +120,300 @@ def test_chat_completions_wraps_roo_requests_as_attempt_completion_tool_call(cli
     assert json.loads(choice["message"]["tool_calls"][0]["function"]["arguments"]) == {
         "result": "All done."
     }
+
+
+def test_chat_completions_roo_request_reads_file_before_editing(client, cache_mocks, search_mock):
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.2",
+            "messages": [{"role": "user", "content": "can you edit calculator.py"}],
+            "tools": [{"type": "function", "function": {"name": "attempt_completion", "parameters": {}}}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    choice = payload["choices"][0]
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert json.loads(choice["message"]["tool_calls"][0]["function"]["arguments"]) == {
+        "path": "calculator.py"
+    }
+    search_mock.assert_not_awaited()
+
+
+def test_chat_completions_roo_request_uses_injected_read_file_block_for_write(client, cache_mocks, search_mock):
+    search_mock.return_value = """```python
+def add(a, b):
+    return a + b
+
+def divide(a, b):
+    return a / b
+```"""
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.2",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "<user_message>\nadd divide function to calculator.py\n</user_message>",
+                        },
+                        {
+                            "type": "text",
+                            "text": (
+                                "[read_file for 'calculator.py']\n"
+                                "File: calculator.py\n"
+                                " 1 | def add(a, b):\n"
+                                " 2 |     return a + b\n"
+                            ),
+                        },
+                        {"type": "text", "text": "<environment_details>cwd=/tmp/project</environment_details>"},
+                    ],
+                }
+            ],
+            "tools": [{"type": "function", "function": {"name": "attempt_completion", "parameters": {}}}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    args = json.loads(payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert payload["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "write_to_file"
+    assert args["path"] == "calculator.py"
+    assert args["content"] == "def add(a, b):\n    return a + b\n\ndef divide(a, b):\n    return a / b"
+    assert args["line_count"] == 5
+
+    query = search_mock.await_args.args[0]
+    assert "Current file content:" in query
+    assert "[read_file for 'calculator.py']" in query
+    assert "User request: add divide function to calculator.py" in query
+
+
+def test_chat_completions_roo_request_attempts_completion_after_write(client, cache_mocks, search_mock):
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.2",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "write_to_file",
+                                "arguments": (
+                                    "{\"path\":\"calculator.py\",\"content\":\"def add(a, b):\\n    return a + b\\n\","
+                                    "\"line_count\":2}"
+                                ),
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "content": "File updated successfully"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "<environment_details>cwd=/tmp/project</environment_details>"}
+                    ],
+                },
+            ],
+            "tools": [{"type": "function", "function": {"name": "attempt_completion", "parameters": {}}}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    args = json.loads(payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert payload["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "attempt_completion"
+    assert args["result"] == "The file `calculator.py` has been updated successfully."
+    search_mock.assert_not_awaited()
+
+
+def test_chat_completions_roo_request_uses_last_read_path_for_write_to_file(client, cache_mocks, search_mock):
+    search_mock.return_value = """[1]
+def add(a, b):
+    return a + b
+
+def divide(a, b):
+    if b == 0:
+        raise ValueError("Cannot divide by zero")
+    return a / b
+programiz+1"""
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.2",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "SYSTEM INFORMATION\nOS: macOS\n====\nCurrent Workspace\n/tmp/project",
+                },
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": "{\"path\":\"calculator.py\"}",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "content": "def add(a, b):\n    return a + b\n",
+                },
+                {"role": "user", "content": "add a divide function"},
+            ],
+            "tools": [{"type": "function", "function": {"name": "attempt_completion", "parameters": {}}}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    choice = payload["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "write_to_file"
+    assert json.loads(choice["message"]["tool_calls"][0]["function"]["arguments"]) == {
+        "path": "calculator.py",
+        "content": "def add(a, b):\n    return a + b\n\n"
+        "def divide(a, b):\n"
+        "    if b == 0:\n"
+        '        raise ValueError("Cannot divide by zero")\n'
+        "    return a / b",
+        "line_count": 7,
+    }
+
+    query = search_mock.await_args.args[0]
+    assert "COMPLETE file content" in query
+    assert "[CURRENT FILE CONTENT]" in query
+    assert "def add(a, b):" in query
+    assert "[TASK]" in query
+
+
+def test_chat_completions_roo_write_to_file_strips_code_fences_and_citations(client, cache_mocks, search_mock):
+    search_mock.return_value = """**calculator.py**
+```python
+[1]
+def add(a, b):
+    return a + b
+
+def divide(a, b):
+    return a / b
+programiz+1
+```"""
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.2",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": "{\"path\":\"calculator.py\"}",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "content": "def add(a, b):\n    return a + b\n",
+                },
+                {"role": "user", "content": "add a divide function"},
+            ],
+            "tools": [{"type": "function", "function": {"name": "attempt_completion", "parameters": {}}}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    args = json.loads(payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert args["path"] == "calculator.py"
+    assert args["content"] == "def add(a, b):\n    return a + b\n\ndef divide(a, b):\n    return a / b"
+    assert args["line_count"] == 5
+
+
+def test_extract_query_prefers_last_user_message_from_roo_text_blocks():
+    messages = [
+        {"role": "system", "content": "You are Roo."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "<user_message>\nhello!\n</user_message>"},
+                {"type": "text", "text": "<environment_details>old env</environment_details>"},
+            ],
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{\"path\":\"calculator.py\"}"},
+                }
+            ],
+        },
+        {"role": "tool", "content": "def add(a, b):\n    return a + b\n"},
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "<user_message>\nadd divide function to calculator.py\n</user_message>\n"
+                        "<environment_details>cwd=/tmp/project</environment_details>"
+                    ),
+                }
+            ],
+        },
+    ]
+
+    assert _extract_query(messages) == "add divide function to calculator.py"
+
+
+def test_extract_query_skips_tool_result_only_user_messages():
+    messages = [
+        {"role": "user", "content": "hello!"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_123", "content": "def add(a, b):\n    return a + b\n"},
+                {"type": "text", "text": "<environment_details>cwd=/tmp/project</environment_details>"},
+            ],
+        },
+    ]
+
+    assert _extract_query(messages) == "hello!"
+
+
+def test_clean_user_content_extracts_inner_user_message():
+    text = (
+        "<user_message>\nadd divide function\n</user_message>\n"
+        "<environment_details>\n# Current Mode\ncode\n</environment_details>"
+    )
+
+    assert _clean_user_content(text) == "add divide function"
 
 
 def test_chat_completions_normalizes_responses_style_payload(client, cache_mocks, search_mock):
@@ -356,7 +654,7 @@ def test_chat_stream_returns_event_stream(client, cache_mocks, search_mock):
 
 
 def test_chat_stream_wraps_roo_requests_as_attempt_completion_tool_call(client, cache_mocks, search_mock):
-    search_mock.return_value = _stream_gen()
+    search_mock.return_value = "Hello world"
 
     response = client.post(
         "/v1/chat/completions",
@@ -369,6 +667,7 @@ def test_chat_stream_wraps_roo_requests_as_attempt_completion_tool_call(client, 
     )
 
     assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
     events = _parse_sse_json_chunks(response.text)
     final_choice = events[-1]["choices"][0]
     assert final_choice["finish_reason"] == "tool_calls"
@@ -376,6 +675,56 @@ def test_chat_stream_wraps_roo_requests_as_attempt_completion_tool_call(client, 
     assert json.loads(final_choice["delta"]["tool_calls"][0]["function"]["arguments"]) == {
         "result": "Hello world"
     }
+
+
+def test_chat_stream_roo_injected_read_file_returns_write_to_file_sse(client, cache_mocks, search_mock):
+    search_mock.return_value = """```python
+def add(a, b):
+    return a + b
+
+def divide(a, b):
+    return a / b
+```"""
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.2",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "<user_message>\nhello, can you edit 'calculator.py' file please add a new function\n</user_message>",
+                        },
+                        {
+                            "type": "text",
+                            "text": (
+                                "[read_file for 'calculator.py']\n"
+                                "File: calculator.py\n"
+                                " 1 | def add(a, b):\n"
+                                " 2 |     return a + b\n"
+                            ),
+                        },
+                    ],
+                }
+            ],
+            "tools": [{"type": "function", "function": {"name": "attempt_completion", "parameters": {}}}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = _parse_sse_json_chunks(response.text)
+    final_choice = events[-1]["choices"][0]
+    assert final_choice["finish_reason"] == "tool_calls"
+    assert final_choice["delta"]["tool_calls"][0]["function"]["name"] == "write_to_file"
+    args = json.loads(final_choice["delta"]["tool_calls"][0]["function"]["arguments"])
+    assert args["path"] == "calculator.py"
+    assert args["content"] == "def add(a, b):\n    return a + b\n\ndef divide(a, b):\n    return a / b"
+    assert args["line_count"] == 5
 
 
 def test_responses_stream_returns_event_stream(client, cache_mocks, search_mock):

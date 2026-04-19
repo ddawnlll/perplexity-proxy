@@ -19,6 +19,9 @@ def patch_lifespan(monkeypatch, mocker):
         "app.main.check_perplexity_session",
         new=AsyncMock(return_value={"ok": True, "authenticated": True, "status_code": 200}),
     )
+    monkeypatch.setattr(settings, "API_KEY_1", "")
+    monkeypatch.setattr(settings, "API_KEY_2", "")
+    monkeypatch.setattr(settings, "API_KEY_3", "")
     yield
     mapper.MODEL_MAP = original_map
 

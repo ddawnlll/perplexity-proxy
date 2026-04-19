@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re as _re
 import time
 import uuid
 from typing import Any, AsyncGenerator
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import ValidationError as PydanticValidationError
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from perplexity.exceptions import PerplexityError
 
 from app import mapper
@@ -37,45 +38,150 @@ from app.models import (
     ResponsesUsage,
 )
 from app.streaming import _extract_text, _snapshot_to_delta, chat_completions_stream, completions_stream, responses_stream
+from app.tools.prompt_builder import build_tool_aware_query
+from app.tools.shim import (
+    _last_tool_call,
+    build_perplexity_instruction,
+    decide_tool,
+    is_roo_request,
+    wrap_as_tool_response,
+)
 
 router = APIRouter()
 logger = logging.getLogger("app.requests")
-
-ROO_TOOL_NAMES = frozenset(
-    {
-        "attempt_completion",
-        "ask_followup_question",
-        "read_file",
-        "write_to_file",
-        "execute_command",
-        "list_files",
-        "search_files",
-        "replace_in_file",
-        "browser_action",
-        "use_mcp_tool",
-    }
-)
-
 
 def build_model_map():
     return mapper.build_model_map()
 
 
-def _is_roo_request(tools: list[Any] | None) -> bool:
-    """Return True if the tools list contains Roo Code built-in tools."""
-    if not tools:
-        return False
-    for tool in tools:
-        name = None
-        if isinstance(tool, dict):
-            function = tool.get("function")
-            if isinstance(function, dict):
-                name = function.get("name")
-            if name is None:
-                name = tool.get("name")
-        if name in ROO_TOOL_NAMES:
-            return True
-    return False
+def _extract_system_message(messages: list[ChatMessage]) -> str | None:
+    for msg in messages:
+        role = ""
+        content: Any = ""
+        if isinstance(msg, dict):
+            role = str(msg.get("role", "")).strip()
+            content = msg.get("content", "")
+        else:
+            role = str(getattr(msg, "role", "")).strip()
+            content = getattr(msg, "content", "")
+        if role != "system":
+            continue
+        if isinstance(content, str):
+            return content
+    return None
+
+
+def _extract_last_read_path(messages: list[ChatMessage]) -> str | None:
+    for msg in reversed(messages):
+        role = ""
+        content: Any = None
+        tool_calls: list[Any] = []
+        if isinstance(msg, dict):
+            role = str(msg.get("role", "")).strip()
+            content = msg.get("content", None)
+            raw_tool_calls = msg.get("tool_calls")
+            if isinstance(raw_tool_calls, list):
+                tool_calls.extend(item for item in raw_tool_calls if isinstance(item, dict))
+        else:
+            role = str(getattr(msg, "role", "")).strip()
+            content = getattr(msg, "content", None)
+        if role != "assistant":
+            continue
+        if isinstance(content, list):
+            tool_calls.extend(item for item in content if isinstance(item, dict))
+        elif isinstance(content, dict):
+            tool_calls.append(content)
+        for tool_call in tool_calls:
+            function = tool_call.get("function", {})
+            if not isinstance(function, dict) or function.get("name") != "read_file":
+                continue
+            try:
+                args = json.loads(function.get("arguments", "{}"))
+            except Exception:
+                continue
+            path = args.get("path")
+            if isinstance(path, str) and path:
+                return path
+    return None
+
+
+def _message_to_dict(message: ChatMessage) -> dict[str, Any]:
+    if isinstance(message, dict):
+        return {
+            "role": str(message.get("role", "")).strip(),
+            "content": message.get("content", None),
+            "tool_calls": message.get("tool_calls", None),
+        }
+    return {
+        "role": str(getattr(message, "role", "")).strip(),
+        "content": getattr(message, "content", None),
+    }
+
+
+def _clean_user_content(text: str) -> str:
+    """Remove Roo wrappers and environment_details noise from user text."""
+    user_message_match = _re.search(r"<user_message>\s*(.*?)\s*</user_message>", text, _re.DOTALL)
+    if user_message_match:
+        return user_message_match.group(1).strip()
+    text = _re.sub(r"<environment_details>.*?</environment_details>", "", text, flags=_re.DOTALL)
+    text = _re.sub(r"</?user_message>", "", text)
+    return text.strip()
+
+def _extract_query(messages: list) -> str:
+    """
+    Return the last user message content as the primary query.
+    Iterates in reverse so the first match is the most recent.
+    """
+    for msg in reversed(messages):
+        if isinstance(msg, dict):
+            role = msg.get("role")
+            content = msg.get("content", "")
+        else:
+            role = getattr(msg, "role", None)
+            content = getattr(msg, "content", "")
+
+        if role != "user":
+            continue
+
+        if isinstance(content, str):
+            cleaned = _clean_user_content(content)
+            if cleaned:
+                return cleaned
+            # content existed but was all noise (env_details etc) — keep looking
+            continue
+
+        if isinstance(content, list):
+            texts: list[str] = []
+            for part in content:
+                if not isinstance(part, dict) or part.get("type") != "text":
+                    continue
+                raw_text = part.get("text", "")
+                if not isinstance(raw_text, str) or not raw_text:
+                    continue
+                cleaned = _clean_user_content(raw_text)
+                if cleaned:
+                    return cleaned
+                texts.append(raw_text)
+
+            joined = _clean_user_content("\n".join(texts))
+            if joined:
+                return joined
+            # all blocks were noise — keep looking for an earlier real message
+            continue
+
+    return ""
+    
+
+def _strip_citations(text: str) -> str:
+    """Remove Perplexity citation markers from plain-text output."""
+    text = text.strip()
+    text = _re.sub(r"^\*\*[^*\n]+\*\*\s*\n?", "", text)
+    text = _re.sub(r"^```[a-zA-Z0-9_+-]*\s*\n?", "", text)
+    text = _re.sub(r"\n?```$", "", text)
+    text = _re.sub(r"\[\d+\]", "", text)
+    text = _re.sub(r"\b\w+\+\d+\b", "", text)
+    text = _re.sub(r"\[\d+(,\s*\d+)*\]", "", text)
+    return text.strip()
 
 
 def _wrap_as_tool_call(text: str) -> dict[str, list[dict[str, Any]]]:
@@ -95,6 +201,19 @@ def _wrap_as_tool_call(text: str) -> dict[str, list[dict[str, Any]]]:
             }
         ]
     }
+
+
+async def _tool_call_stream(
+    *,
+    model: str,
+    response_id: str,
+    decision: dict[str, Any],
+    prose: str | None,
+) -> AsyncGenerator[str, None]:
+    payload = wrap_as_tool_response(prose, model, response_id, decision)
+    tool_calls = payload["choices"][0]["message"]["tool_calls"]
+    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': None, 'tool_calls': tool_calls}, 'finish_reason': 'tool_calls'}]}, separators=(',', ':'))}\n\n"
+    yield "data: [DONE]\n\n"
 
 
 def _content_to_text(content: Any) -> str:
@@ -562,27 +681,78 @@ async def refresh_models_endpoint(authorization: str = Header(...)) -> RefreshRe
 async def chat_completions(request: Request):
     try:
         raw_body = await request.json()
+        raw_messages = raw_body.get("messages") if isinstance(raw_body.get("messages"), list) else []
         req = _normalize_chat_payload(raw_body)
-        roo_mode = _is_roo_request(req.tools)
+        roo_mode = is_roo_request(req.tools)
         mode, model = resolve(req.model)
         continuation_key = _continuation_transcript_key(req.messages)
         follow_up = await _resolve_follow_up(transcript_key=continuation_key)
         query, system_prompt = _build_query_from_messages(req.messages)
-        if system_prompt:
+        if roo_mode:
+            if not raw_messages:
+                logger.error("raw_messages empty! roo extraction will fail.")
+            roo_messages = raw_messages
+            user_query = _extract_query(roo_messages)
+            logger.info("roo extracted query=%s", _summary(user_query))
+            decision = decide_tool(roo_messages, user_query)
+            perplexity_q = build_perplexity_instruction(decision, user_query, messages=roo_messages)
+            response_id = f"chatcmpl-{uuid.uuid4().hex}"
+            prose = decision.get("static_result")
+            if perplexity_q is not None:
+                if decision["tool"] == "write_to_file" and decision.get("content_source") != "injected_read":
+                    system_prompt = _extract_system_message(roo_messages)
+                    perplexity_q = build_tool_aware_query(
+                        original_query=perplexity_q,
+                        system_message=system_prompt,
+                        messages=roo_messages,
+                    )
+                prose = await search(perplexity_q, mode, model, stream=False, follow_up=follow_up)
+                prose = _strip_citations(_extract_result_text(prose))
+            logger.warning(
+                "ROO TURN AUDIT | tool=%s | path=%s | prose_len=%d | last_tool=%s",
+                decision["tool"],
+                decision.get("args_hint", {}).get("path", "-"),
+                len(prose or ""),
+                (_last_tool_call(roo_messages) or [None])[0],
+            )
+            _log_summary(
+                "POST /v1/chat/completions",
+                200,
+                model=req.model,
+                mode=mode,
+                stream=req.stream,
+                query=_summary(perplexity_q or user_query),
+                response=_summary(prose or ""),
+                roo_tool=decision["tool"],
+            )
+            if req.stream:
+                return StreamingResponse(
+                    _tool_call_stream(
+                        model=req.model,
+                        response_id=response_id,
+                        decision=decision,
+                        prose=prose,
+                    ),
+                    media_type="text/event-stream",
+                )
+            return JSONResponse(content=wrap_as_tool_response(prose, req.model, response_id, decision))
+        elif system_prompt:
             query = f"{system_prompt}\n\n{query}"
 
-        cache_key = cache.make_key(
-            query,
-            req.model,
-            request_type="chat",
-            temperature=req.temperature,
-            max_tokens=req.max_tokens,
-            top_p=req.top_p,
-            stream=req.stream,
-            tools=req.tools,
-            tool_choice=req.tool_choice,
-            parallel_tool_calls=req.parallel_tool_calls,
-        )
+        cache_key = None
+        if not roo_mode:
+            cache_key = cache.make_key(
+                query,
+                req.model,
+                request_type="chat",
+                temperature=req.temperature,
+                max_tokens=req.max_tokens,
+                top_p=req.top_p,
+                stream=req.stream,
+                tools=req.tools,
+                tool_choice=req.tool_choice,
+                parallel_tool_calls=req.parallel_tool_calls,
+            )
 
         if req.stream:
             response_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -609,32 +779,34 @@ async def chat_completions(request: Request):
             )
             return StreamingResponse(await _prefetch_first_chunk(stream), media_type="text/event-stream")
 
-        cached = await cache.get(cache_key)
-        if cached is not None:
-            response = ChatResponse.model_validate_json(cached)
-            cached_text = ""
-            if response.choices:
-                cached_text = _extract_result_text(response.choices[0].message.content)
-            _log_summary(
-                "POST /v1/chat/completions",
-                200,
-                model=req.model,
-                mode=mode,
-                stream=False,
-                query=_summary(query),
-                response=_summary(cached_text),
-                cache="hit",
-            )
-            return response
+        if cache_key is not None:
+            cached = await cache.get(cache_key)
+            if cached is not None:
+                response = ChatResponse.model_validate_json(cached)
+                cached_text = ""
+                if response.choices:
+                    cached_text = _extract_result_text(response.choices[0].message.content)
+                _log_summary(
+                    "POST /v1/chat/completions",
+                    200,
+                    model=req.model,
+                    mode=mode,
+                    stream=False,
+                    query=_summary(query),
+                    response=_summary(cached_text),
+                    cache="hit",
+                )
+                return response
 
         result = await search(query, mode, model, stream=False, follow_up=follow_up)
-        response = _chat_response(req.model, result, roo_mode=roo_mode)
+        response = _chat_response(req.model, result, roo_mode=False)
         await _store_follow_up(
             response_id=response.id,
             transcript_key=_assistant_transcript_key(req.messages, _extract_result_text(result)),
             payload=result,
         )
-        await cache.set(cache_key, response.model_dump_json())
+        if cache_key is not None:
+            await cache.set(cache_key, response.model_dump_json())
         _log_summary(
             "POST /v1/chat/completions",
             200,
