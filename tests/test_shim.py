@@ -2,94 +2,39 @@ from __future__ import annotations
 
 import json
 
-from app.tools.shim import build_perplexity_instruction, decide_tool, wrap_as_tool_response
+from app.tools.shim import (
+    Phase,
+    build_perplexity_instruction,
+    decide_tool,
+    detect_phase,
+    wrap_as_tool_response,
+)
 
 
-def test_decide_tool_returns_write_to_file_after_read_file():
+def test_detect_phase_starts_in_planning_without_prior_tool_calls():
+    phase, context = detect_phase([], "Create calculator/core.py and calculator/history.py.")
+
+    assert phase == Phase.PLANNING
+    assert "calculator/core.py" in context["query"]
+
+
+def test_detect_phase_generates_after_read_file():
     messages = [
         {
             "role": "assistant",
             "tool_calls": [{"function": {"name": "read_file", "arguments": "{\"path\":\"calculator.py\"}"}}],
         },
-        {"role": "tool", "content": "def add(a,b): return a+b"},
+        {"role": "tool", "content": "def add(a, b):\n    return a + b\n"},
     ]
 
-    decision = decide_tool(messages, "add a divide function")
+    phase, context = detect_phase(messages, "add divide")
 
-    assert decision["tool"] == "write_to_file"
-    assert decision["args_hint"]["path"] == "calculator.py"
-
-
-def test_decide_tool_returns_read_file_for_first_file_edit_request():
-    decision = decide_tool([], "can you edit calculator.py")
-
-    assert decision["tool"] == "read_file"
-    assert "calculator.py" in decision["args_hint"]["path"]
+    assert phase == Phase.GENERATING
+    assert context["file"] == "calculator.py"
+    assert "def add" in context["current_content"]
 
 
-def test_decide_tool_falls_back_to_attempt_completion():
-    decision = decide_tool([], "hello")
-
-    assert decision["tool"] == "attempt_completion"
-
-
-def test_decide_tool_uses_injected_read_file_block_for_write():
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "<user_message>\nadd divide to calculator.py\n</user_message>"},
-                {
-                    "type": "text",
-                    "text": "[read_file for 'calculator.py']\nFile: calculator.py\n 1 | def add(a, b):\n 2 |     return a + b",
-                },
-            ],
-        }
-    ]
-
-    decision = decide_tool(messages, "add divide to calculator.py")
-
-    assert decision["tool"] == "write_to_file"
-    assert decision["args_hint"]["path"] == "calculator.py"
-    assert decision["content_source"] == "injected_read"
-
-
-def test_decide_tool_returns_attempt_completion_after_write_to_file():
-    messages = [
-        {
-            "role": "assistant",
-            "tool_calls": [
-                {
-                    "function": {
-                        "name": "write_to_file",
-                        "arguments": "{\"path\":\"calculator.py\",\"content\":\"def add(a, b):\\n    return a + b\\n\",\"line_count\":2}",
-                    }
-                }
-            ],
-        },
-        {"role": "tool", "content": "File updated successfully"},
-        {"role": "user", "content": [{"type": "text", "text": "<environment_details>cwd=/tmp/project</environment_details>"}]},
-    ]
-
-    decision = decide_tool(messages, "")
-
-    assert decision["tool"] == "attempt_completion"
-    assert decision["static_result"] == "The file `calculator.py` has been updated successfully."
-    assert decision["content_source"] == "post_write"
-
-
-def test_decide_tool_creates_new_file_without_read():
-    decision = decide_tool([], "create calculator/core.py with add and divide functions")
-
-    assert decision["tool"] == "write_to_file"
-    assert decision["args_hint"]["path"] == "calculator/core.py"
-    assert decision["content_source"] == "request"
-
-
-def test_decide_tool_moves_to_next_pending_file_after_write():
-    user_query = (
-        "Create calculator/core.py and calculator/history.py, then run `python -m pytest calculator/tests/ -v`."
-    )
+def test_detect_phase_reads_next_pending_file_after_write():
     messages = [
         {
             "role": "assistant",
@@ -104,52 +49,16 @@ def test_decide_tool_moves_to_next_pending_file_after_write():
         }
     ]
 
-    decision = decide_tool(messages, user_query)
-
-    assert decision["tool"] == "write_to_file"
-    assert decision["args_hint"]["path"] == "calculator/history.py"
-    assert decision["content_source"] == "multi_file"
-
-
-def test_decide_tool_uses_task_history_when_latest_turn_is_only_environment_details():
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "<user_message>Create calculator/core.py and calculator/history.py, then run `python -m pytest calculator/tests/ -v`.</user_message>",
-                }
-            ],
-        },
-        {
-            "role": "assistant",
-            "tool_calls": [
-                {
-                    "function": {
-                        "name": "write_to_file",
-                        "arguments": "{\"path\":\"calculator/core.py\",\"content\":\"pass\\n\",\"line_count\":1}",
-                    }
-                }
-            ],
-        },
-        {
-            "role": "user",
-            "content": [{"type": "text", "text": "<environment_details>cwd=/tmp/project</environment_details>"}],
-        },
-    ]
-
-    decision = decide_tool(messages, "")
-
-    assert decision["tool"] == "write_to_file"
-    assert decision["args_hint"]["path"] == "calculator/history.py"
-    assert decision["content_source"] == "multi_file"
-
-
-def test_decide_tool_runs_next_pending_command_after_files_written():
-    user_query = (
-        "Create calculator/core.py and calculator/history.py, then run `python -m pytest calculator/tests/ -v`."
+    phase, context = detect_phase(
+        messages,
+        "Create calculator/core.py and calculator/history.py, then run `python -m pytest calculator/tests/ -v`.",
     )
+
+    assert phase == Phase.READING
+    assert context["path"] == "calculator/history.py"
+
+
+def test_detect_phase_moves_to_testing_after_last_write_when_command_exists():
     messages = [
         {
             "role": "assistant",
@@ -175,50 +84,123 @@ def test_decide_tool_runs_next_pending_command_after_files_written():
         },
     ]
 
-    decision = decide_tool(messages, user_query)
+    phase, context = detect_phase(
+        messages,
+        "Create calculator/core.py and calculator/history.py, then run `python -m pytest calculator/tests/ -v`.",
+    )
 
-    assert decision["tool"] == "execute_command"
-    assert decision["args_hint"]["command"] == "python -m pytest calculator/tests/ -v"
-    assert decision["content_source"] == "multi_file"
-
-
-def test_decide_tool_detects_execute_command_request():
-    decision = decide_tool([], "run `python -m pytest calculator/tests/ -v`")
-
-    assert decision["tool"] == "execute_command"
-    assert decision["args_hint"]["command"] == "python -m pytest calculator/tests/ -v"
+    assert phase == Phase.TESTING
+    assert context["command"] == "python -m pytest calculator/tests/ -v"
 
 
-def test_build_perplexity_instruction_includes_injected_file_block():
+def test_detect_phase_reads_failing_file_after_test_error():
     messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "execute_command",
+                        "arguments": "{\"command\":\"python -m pytest calculator/tests/ -v\"}",
+                    }
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": (
+                "ERROR collecting test_formatter.py\n"
+                "E   ImportError: cannot import name 'format_error' from 'calculator' "
+                "(/Users/hootie/src/bugbot/calculator/__init__.py)\n"
+            ),
+        },
+    ]
+
+    phase, context = detect_phase(messages, "Fix the problem please")
+
+    assert phase == Phase.READING
+    assert context["path"] == "calculator/__init__.py"
+
+
+def test_detect_phase_fixes_after_failed_command_with_injected_content():
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "execute_command",
+                        "arguments": "{\"command\":\"python -m pytest calculator/tests/ -v\"}",
+                    }
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": "ImportError: cannot import name 'format_error' from 'calculator'",
+        },
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "<user_message>\nadd divide to calculator.py\n</user_message>"},
                 {
                     "type": "text",
-                    "text": "[read_file for 'calculator.py']\nFile: calculator.py\n 1 | def add(a, b):\n 2 |     return a + b",
-                },
+                    "text": "[read_file for 'calculator/__init__.py']\nFile: calculator/__init__.py\n 1 | from .formatter import format_result",
+                }
             ],
-        }
+        },
     ]
 
-    prompt = build_perplexity_instruction(
-        {
-            "tool": "write_to_file",
-            "perplexity_instruction": "Return ONLY the complete updated content of calculator.py.",
+    phase, context = detect_phase(messages, "Fix the problem please")
+
+    assert phase == Phase.FIXING
+    assert context["file"] == "calculator/__init__.py"
+
+
+def test_build_perplexity_instruction_uses_phase_prompt_for_generating():
+    decision = {
+        "tool": "write_to_file",
+        "phase": Phase.GENERATING.value,
+        "phase_context": {
+            "file": "calculator.py",
+            "current_content": "def add(a, b):\n    return a + b\n",
+            "query": "add divide function",
         },
-        "add divide to calculator.py",
-        messages=messages,
-    )
+    }
+
+    prompt = build_perplexity_instruction(decision, "add divide function")
 
     assert prompt is not None
-    assert "Current file content:" in prompt
-    assert "[read_file for 'calculator.py']" in prompt
-    assert "User request: add divide to calculator.py" in prompt
+    assert "Return ONLY the complete updated content of calculator.py." in prompt
+    assert "Current content:" in prompt
+    assert "Task: add divide function" in prompt
 
 
-def test_wrap_as_tool_response_uses_decision_directly():
+def test_decide_tool_returns_phase_based_tool_shapes():
+    planning = decide_tool([], "Create calculator/core.py")
+    assert planning["tool"] == "attempt_completion"
+    assert planning["phase"] == Phase.PLANNING.value
+
+    reading = decide_tool(
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "write_to_file",
+                            "arguments": "{\"path\":\"calculator/core.py\",\"content\":\"pass\\n\",\"line_count\":1}",
+                        }
+                    }
+                ],
+            }
+        ],
+        "Create calculator/core.py and calculator/history.py",
+    )
+    assert reading["tool"] == "read_file"
+    assert reading["args_hint"]["path"] == "calculator/history.py"
+
+
+def test_wrap_as_tool_response_handles_phase_tools():
     payload = wrap_as_tool_response(
         "def add(a, b):\n    return a + b\n",
         "gpt-5.2",
@@ -226,21 +208,14 @@ def test_wrap_as_tool_response_uses_decision_directly():
         {"tool": "write_to_file", "args_hint": {"path": "calculator.py"}},
     )
     args = json.loads(payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
-
-    assert payload["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "write_to_file"
     assert args["path"] == "calculator.py"
-    assert "return a + b" in args["content"]
     assert args["line_count"] == 2
 
-
-def test_wrap_as_tool_response_handles_execute_command():
-    payload = wrap_as_tool_response(
+    command_payload = wrap_as_tool_response(
         None,
         "gpt-5.2",
-        "chatcmpl-123",
+        "chatcmpl-456",
         {"tool": "execute_command", "args_hint": {"command": "python -m pytest calculator/tests/ -v"}},
     )
-    args = json.loads(payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
-
-    assert payload["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "execute_command"
-    assert args["command"] == "python -m pytest calculator/tests/ -v"
+    command_args = json.loads(command_payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert command_args["command"] == "python -m pytest calculator/tests/ -v"

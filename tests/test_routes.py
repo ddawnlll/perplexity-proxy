@@ -122,7 +122,9 @@ def test_chat_completions_wraps_roo_requests_as_attempt_completion_tool_call(cli
     }
 
 
-def test_chat_completions_roo_request_reads_file_before_editing(client, cache_mocks, search_mock):
+def test_chat_completions_roo_request_enters_planning_phase_first(client, cache_mocks, search_mock):
+    search_mock.return_value = "Plan: read calculator.py, update it, then run pytest."
+
     response = client.post(
         "/v1/chat/completions",
         json={
@@ -136,11 +138,11 @@ def test_chat_completions_roo_request_reads_file_before_editing(client, cache_mo
     assert response.status_code == 200
     payload = response.json()
     choice = payload["choices"][0]
-    assert choice["message"]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "attempt_completion"
     assert json.loads(choice["message"]["tool_calls"][0]["function"]["arguments"]) == {
-        "path": "calculator.py"
+        "result": "Plan: read calculator.py, update it, then run pytest."
     }
-    search_mock.assert_not_awaited()
+    assert "Analyze this task and provide a concise implementation plan" in search_mock.await_args.args[0]
 
 
 def test_chat_completions_roo_request_uses_injected_read_file_block_for_write(client, cache_mocks, search_mock):
@@ -191,17 +193,26 @@ def divide(a, b):
     assert args["line_count"] == 5
 
     query = search_mock.await_args.args[0]
-    assert "Current file content:" in query
-    assert "[read_file for 'calculator.py']" in query
-    assert "User request: add divide function to calculator.py" in query
+    assert "Return ONLY the complete updated content of calculator.py." in query
+    assert "Current content:" in query
+    assert "Task: add divide function to calculator.py" in query
 
 
-def test_chat_completions_roo_request_attempts_completion_after_write(client, cache_mocks, search_mock):
+def test_chat_completions_roo_request_reads_next_file_after_write(client, cache_mocks, search_mock):
     response = client.post(
         "/v1/chat/completions",
         json={
             "model": "gpt-5.2",
             "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "<user_message>Create calculator/core.py and calculator/history.py, then run `python -m pytest calculator/tests/ -v`.</user_message>",
+                        }
+                    ],
+                },
                 {
                     "role": "assistant",
                     "tool_calls": [
@@ -211,7 +222,7 @@ def test_chat_completions_roo_request_attempts_completion_after_write(client, ca
                             "function": {
                                 "name": "write_to_file",
                                 "arguments": (
-                                    "{\"path\":\"calculator.py\",\"content\":\"def add(a, b):\\n    return a + b\\n\","
+                                    "{\"path\":\"calculator/core.py\",\"content\":\"def add(a, b):\\n    return a + b\\n\","
                                     "\"line_count\":2}"
                                 ),
                             },
@@ -234,8 +245,8 @@ def test_chat_completions_roo_request_attempts_completion_after_write(client, ca
     assert response.status_code == 200
     payload = response.json()
     args = json.loads(payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
-    assert payload["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "attempt_completion"
-    assert args["result"] == "The file `calculator.py` has been updated successfully."
+    assert payload["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert args["path"] == "calculator/history.py"
     search_mock.assert_not_awaited()
 
 
@@ -299,10 +310,10 @@ programiz+1"""
     }
 
     query = search_mock.await_args.args[0]
-    assert "COMPLETE file content" in query
-    assert "[CURRENT FILE CONTENT]" in query
+    assert "Return ONLY the complete updated content of calculator.py." in query
+    assert "Current content:" in query
     assert "def add(a, b):" in query
-    assert "[TASK]" in query
+    assert "Task: add a divide function" in query
 
 
 def test_chat_completions_roo_write_to_file_strips_code_fences_and_citations(client, cache_mocks, search_mock):
@@ -586,7 +597,7 @@ def test_chat_multi_turn_reuses_follow_up_from_previous_assistant_turn(client, c
 
 def test_roo_chat_multi_turn_reuses_follow_up_across_tool_turns(client, cache_mocks, search_mock):
     search_mock.side_effect = [
-        {"answer": "def add(a, b):\n    return a + b\n", "backend_uuid": "backend-1", "attachments": []},
+        {"answer": "Plan: read calculator/core.py, then calculator/history.py.", "backend_uuid": "backend-1", "attachments": []},
         {"answer": "from dataclasses import dataclass\n", "backend_uuid": "backend-2", "attachments": []},
     ]
 
@@ -612,7 +623,7 @@ def test_roo_chat_multi_turn_reuses_follow_up_across_tool_turns(client, cache_mo
     )
     assert first.status_code == 200
     first_call = first.json()["choices"][0]["message"]["tool_calls"][0]
-    assert first_call["function"]["name"] == "write_to_file"
+    assert first_call["function"]["name"] == "attempt_completion"
 
     second = client.post(
         "/v1/chat/completions",
@@ -625,17 +636,25 @@ def test_roo_chat_multi_turn_reuses_follow_up_across_tool_turns(client, cache_mo
                         {
                             "type": "text",
                             "text": "<user_message>\ncreate calculator/core.py and calculator/history.py\n</user_message>",
-                        },
+                        }
                     ],
                 },
                 {
                     "role": "assistant",
                     "tool_calls": [first_call],
                 },
-                {"role": "tool", "content": "File written"},
+                {"role": "tool", "content": "Plan acknowledged"},
                 {
                     "role": "user",
                     "content": [
+                        {
+                            "type": "text",
+                            "text": "<user_message>\ncreate calculator/core.py and calculator/history.py\n</user_message>",
+                        },
+                        {
+                            "type": "text",
+                            "text": "[read_file for 'calculator/core.py']\nFile: calculator/core.py\n 1 | def add(a, b):\n 2 |     return a + b",
+                        },
                         {"type": "text", "text": "<environment_details>cwd=/tmp/project</environment_details>"},
                     ],
                 },
@@ -648,7 +667,7 @@ def test_roo_chat_multi_turn_reuses_follow_up_across_tool_turns(client, cache_mo
     assert search_mock.await_count == 2
     second_call = second.json()["choices"][0]["message"]["tool_calls"][0]
     assert second_call["function"]["name"] == "write_to_file"
-    assert json.loads(second_call["function"]["arguments"])["path"] == "calculator/history.py"
+    assert json.loads(second_call["function"]["arguments"])["path"] == "calculator/core.py"
     assert search_mock.await_args_list[1].kwargs["follow_up"] == {
         "backend_uuid": "backend-1",
         "attachments": [],

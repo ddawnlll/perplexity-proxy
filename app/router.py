@@ -38,7 +38,6 @@ from app.models import (
     ResponsesUsage,
 )
 from app.streaming import _extract_text, _snapshot_to_delta, chat_completions_stream, completions_stream, responses_stream
-from app.tools.prompt_builder import build_tool_aware_query
 from app.tools.shim import (
     _last_tool_call,
     build_perplexity_instruction,
@@ -714,13 +713,6 @@ async def chat_completions(request: Request):
             prose = decision.get("static_result")
             raw_result: Any = None
             if perplexity_q is not None:
-                if decision["tool"] == "write_to_file" and decision.get("content_source") != "injected_read":
-                    system_prompt = _extract_system_message(roo_messages)
-                    perplexity_q = build_tool_aware_query(
-                        original_query=perplexity_q,
-                        system_message=system_prompt,
-                        messages=roo_messages,
-                    )
                 raw_result = await search(perplexity_q, mode, model, stream=False, follow_up=follow_up)
                 prose = _strip_citations(_extract_result_text(raw_result))
                 await _store_follow_up(
