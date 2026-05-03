@@ -46,6 +46,9 @@ from app.tools.shim import (
     build_perplexity_instruction,
     coding_shim,
     decide_tool,
+    normalize_tool_request_text,
+    parse_tool_request,
+    build_conversational_tool_decision,
     wrap_as_tool_response,
     wrap_for_hermes,
 )
@@ -237,8 +240,14 @@ async def _tool_call_stream(
     prose: str | None,
 ) -> AsyncGenerator[str, None]:
     payload = wrap_as_tool_response(prose, model, response_id, decision)
-    tool_calls = payload["choices"][0]["message"]["tool_calls"]
-    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': None, 'tool_calls': tool_calls}, 'finish_reason': 'tool_calls'}]}, separators=(',', ':'))}\n\n"
+    choice = payload["choices"][0]
+    message = choice["message"]
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': None, 'tool_calls': tool_calls}, 'finish_reason': 'tool_calls'}]}, separators=(',', ':'))}\n\n"
+    else:
+        content = message.get("content")
+        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': content}, 'finish_reason': 'stop'}]}, separators=(',', ':'))}\n\n"
     yield "data: [DONE]\n\n"
 
 
@@ -764,7 +773,7 @@ async def chat_completions(request: Request):
         continuation_key = _continuation_transcript_key(req.messages)
         follow_up = await _resolve_follow_up(transcript_key=continuation_key)
         query, system_prompt = _build_query_from_messages(req.messages)
-        coding_state = coding_shim(req.messages, query, req.tools, user_agent=user_agent, system_message=system_prompt)
+        coding_state = coding_shim(raw_messages or req.messages, query, req.tools, user_agent=user_agent, system_message=system_prompt)
         agent = coding_state["agent"]
         roo_mode = agent == Agent.ROO
         if roo_mode:
@@ -778,7 +787,8 @@ async def chat_completions(request: Request):
             response_id = f"chatcmpl-{uuid.uuid4().hex}"
             prose = decision.get("static_result")
             raw_result: Any = None
-            if perplexity_q is not None:
+            direct_tool = decision.get("tool") in {"read_file", "execute_command", "list_files", "search_files"}
+            if perplexity_q is not None and not direct_tool:
                 raw_result = await search(perplexity_q, mode, model, stream=False, follow_up=follow_up)
                 prose = _strip_citations(_extract_result_text(raw_result))
                 await _store_follow_up(
@@ -823,17 +833,16 @@ async def chat_completions(request: Request):
             if not hermes_query:
                 hermes_query = query
             hermes_prompt = coding_state.get("perplexity_prompt") or build_hermes_prompt(hermes_query, system_prompt)
-            generator = await search(hermes_prompt, mode, model, stream=True, follow_up=follow_up)
-            stream = chat_completions_stream(
-                _wrap_stream_with_follow_up(
-                    generator,
-                    response_id=response_id,
-                    transcript_key=None,
-                    transcript_messages=req.messages,
-                ),
-                req.model,
-                response_id,
-                roo_mode=False,
+            result = await search(hermes_prompt, mode, model, stream=False, follow_up=follow_up)
+            prose = _strip_citations(_extract_result_text(result))
+            tool_name, tool_arg = parse_tool_request(prose)
+            normalized_prose = normalize_tool_request_text(tool_name, prose, tool_arg)
+            decision = build_conversational_tool_decision(tool_name, tool_arg)
+            stream = _tool_call_stream(
+                model=req.model,
+                response_id=response_id,
+                decision=decision,
+                prose=normalized_prose,
             )
             _log_summary(
                 "POST /v1/chat/completions",
@@ -842,10 +851,11 @@ async def chat_completions(request: Request):
                 mode=mode,
                 stream=True,
                 query=_summary(hermes_prompt),
-                response="stream",
+                response=_summary(normalized_prose),
                 agent=agent.value,
+                hermes_tool=tool_name,
             )
-            return StreamingResponse(await _prefetch_first_chunk(stream), media_type="text/event-stream")
+            return StreamingResponse(stream, media_type="text/event-stream")
         elif system_prompt:
             query = f"{system_prompt}\n\n{query}"
 

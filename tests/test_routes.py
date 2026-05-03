@@ -122,12 +122,8 @@ def test_chat_completions_wraps_roo_requests_as_attempt_completion_tool_call(cli
     }
 
 
-async def _hermes_stream_gen():
-    yield "All done."
-
-
-def test_chat_completions_forces_streaming_plain_response_for_hermes(client, cache_mocks, search_mock):
-    search_mock.return_value = _hermes_stream_gen()
+def test_chat_completions_forces_streaming_tool_call_for_hermes(client, cache_mocks, search_mock):
+    search_mock.return_value = "I should run ls -la. Please execute ls -la"
 
     response = client.post(
         "/v1/chat/completions",
@@ -143,8 +139,32 @@ def test_chat_completions_forces_streaming_plain_response_for_hermes(client, cac
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     events = _parse_sse_json_chunks(response.text)
-    assert events[-1]["choices"][0]["finish_reason"] == "stop"
-    assert events[0]["choices"][0]["delta"]["content"] == "All done."
+    assert events[-1]["choices"][0]["finish_reason"] == "tool_calls"
+    assert events[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "execute_command"
+    assert json.loads(events[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]) == {
+        "command": "ls -la"
+    }
+
+
+def test_chat_completions_runs_direct_command_requests_when_execute_tool_is_available(client, cache_mocks, search_mock):
+    search_mock.return_value = "Running the command now."
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.2",
+            "messages": [{"role": "user", "content": "can you run command pwd"}],
+            "tools": [{"type": "function", "function": {"name": "execute_command", "parameters": {}}}],
+            "stream": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    choice = payload["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "execute_command"
+    assert json.loads(choice["message"]["tool_calls"][0]["function"]["arguments"]) == {"command": "pwd"}
 
 
 def test_chat_completions_roo_request_enters_planning_phase_first(client, cache_mocks, search_mock):

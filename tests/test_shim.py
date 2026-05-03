@@ -6,15 +6,19 @@ from app.tools.shim import (
     Agent,
     CodingPhase,
     Phase,
+    build_conversational_prompt,
     build_full_context_prompt,
     build_hermes_prompt,
     build_perplexity_instruction,
+    build_conversational_tool_decision,
     coding_shim,
     decide_tool,
     detect_agent,
     detect_coding_phase,
     detect_phase,
     extract_task_history,
+    normalize_tool_request_text,
+    parse_tool_request,
     wrap_as_tool_response,
     wrap_for_hermes,
 )
@@ -69,6 +73,17 @@ def test_detect_agent_recognizes_live_hermes_core_tools():
     ]
 
     assert detect_agent(hermes_tools) == Agent.HERMES
+
+
+def test_detect_agent_recognizes_pi_coding_tools():
+    pi_tools = [
+        {"type": "function", "function": {"name": "read", "parameters": {}}},
+        {"type": "function", "function": {"name": "edit", "parameters": {}}},
+        {"type": "function", "function": {"name": "bash", "parameters": {}}},
+        {"type": "function", "function": {"name": "ls", "parameters": {}}},
+    ]
+
+    assert detect_agent(pi_tools) == Agent.ROO
 
 
 def test_detect_phase_starts_in_planning_without_prior_tool_calls():
@@ -207,6 +222,28 @@ def test_detect_phase_skips_testing_when_execute_command_is_not_declared():
 
     assert phase == Phase.COMPLETE
     assert context["written"] == "calculator/core.py"
+
+
+def test_detect_phase_runs_direct_command_requests():
+    phase, context = detect_phase(
+        [],
+        "can you run command pwd",
+        tools=[{"type": "function", "function": {"name": "execute_command", "parameters": {}}}],
+    )
+
+    assert phase == Phase.TESTING
+    assert context["command"] == "pwd"
+
+
+def test_detect_phase_runs_short_direct_commands():
+    phase, context = detect_phase(
+        [],
+        "can you pwd",
+        tools=[{"type": "function", "function": {"name": "execute_command", "parameters": {}}}],
+    )
+
+    assert phase == Phase.TESTING
+    assert context["command"] == "pwd"
 
 
 def test_detect_phase_advances_to_next_planned_command_after_success():
@@ -475,6 +512,56 @@ def test_build_hermes_prompt_requests_plain_terminal_text():
     assert prompt.endswith("User message: hello")
 
 
+def test_build_conversational_prompt_includes_full_history_and_tool_formats():
+    prompt = build_conversational_prompt(
+        "make a calculator app",
+        messages=[
+            {"role": "user", "content": "make a calculator app"},
+            {"role": "assistant", "content": "I should inspect the repo"},
+            {"role": "user", "content": "please continue"},
+        ],
+        system_message="Project uses Python",
+    )
+
+    assert "conversational coding partner" in prompt
+    assert "Please read [filename]" in prompt
+    assert "Use the Pi tools directly when possible: read, edit, ls, and bash." in prompt
+    assert "Current conversation:" in prompt
+    assert "make a calculator app" in prompt
+    assert "please continue" in prompt
+    assert "Latest user request:" in prompt
+
+
+def test_parse_tool_request_recognizes_read_write_execute_and_complete():
+    assert parse_tool_request("Please read main.py") == ("read_file", "main.py")
+    assert parse_tool_request("Please execute pytest -q") == ("execute_command", "pytest -q")
+    assert parse_tool_request("Here's the updated calculator.py:\ndef add(a, b):\n    return a + b") == ("write_to_file", "calculator.py")
+    assert parse_tool_request("Looks good! All done.") == ("attempt_completion", None)
+
+
+def test_parse_tool_request_trims_follow_up_instructions_from_targets():
+    assert parse_tool_request("I should run ls -la. Please execute ls -la") == ("execute_command", "ls -la")
+    assert parse_tool_request("can you run command pwd") == ("execute_command", "pwd")
+    assert parse_tool_request("can you pwd") == ("execute_command", "pwd")
+    assert parse_tool_request("I need to list files in /Users/hootie/src/test. Please list files in /Users/hootie/src/test") == (
+        "list_files",
+        "/Users/hootie/src/test",
+    )
+    assert parse_tool_request("Please read main.py. Then tell me what you see.") == ("read_file", "main.py")
+
+
+def test_normalize_tool_request_text_strips_write_header_and_fences():
+    text = "Here\'s the updated calculator.py:\n```python\ndef add(a, b):\n    return a + b\n```"
+    normalized = normalize_tool_request_text("write_to_file", text, "calculator.py")
+    assert normalized == "def add(a, b):\n    return a + b"
+
+
+def test_build_conversational_tool_decision_maps_arguments():
+    decision = build_conversational_tool_decision("execute_command", "pytest -q")
+    assert decision["tool"] == "execute_command"
+    assert decision["args_hint"]["command"] == "pytest -q"
+
+
 def test_extract_task_history_preserves_read_blocks_and_recent_turns():
     history = extract_task_history(
         [
@@ -588,6 +675,37 @@ def test_wrap_as_tool_response_handles_phase_tools():
     )
     command_args = json.loads(command_payload["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
     assert command_args["command"] == "python -m pytest calculator/tests/ -v"
+
+
+def test_wrap_as_tool_response_maps_pi_style_tools():
+    edit_payload = wrap_as_tool_response(
+        "def add(a, b):\n    return a + b\n\n",
+        "gpt-5.2",
+        "chatcmpl-pi-edit",
+        {
+            "tool": "write_to_file",
+            "tool_style": "pi",
+            "args_hint": {"path": "calculator.py"},
+            "phase_context": {"current_content": "def add(a, b):\n    return a + b\n"},
+        },
+    )
+    edit_call = edit_payload["choices"][0]["message"]["tool_calls"][0]["function"]
+    assert edit_call["name"] == "edit"
+    edit_args = json.loads(edit_call["arguments"])
+    assert edit_args["path"] == "calculator.py"
+    assert edit_args["edits"][0]["oldText"] == "def add(a, b):\n    return a + b\n"
+    assert edit_args["edits"][0]["newText"] == "def add(a, b):\n    return a + b"
+
+    complete_payload = wrap_as_tool_response(
+        "All done.",
+        "gpt-5.2",
+        "chatcmpl-pi-complete",
+        {"tool": "attempt_completion", "tool_style": "pi", "args_hint": {}},
+    )
+    complete_choice = complete_payload["choices"][0]
+    assert complete_choice["finish_reason"] == "stop"
+    assert complete_choice["message"]["content"] == "All done."
+    assert "tool_calls" not in complete_choice["message"]
 
 
 def test_wrap_as_tool_response_falls_back_for_empty_write_and_empty_completion():

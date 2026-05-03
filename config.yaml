@@ -1,0 +1,49 @@
+# perplexity-proxy configuration
+# All values here can be overridden by environment variables (uppercase).
+# Example: HOST in config.yaml is overridden by HOST=... in .env or shell env.
+
+# Server bind address. Use "" to bind all interfaces, "127.0.0.1" for localhost only.
+host: "0.0.0.0"
+
+# Inbound API keys for OpenAI-compatible clients.
+# Set one or more keys; protected /v1 endpoints must send a matching Authorization: Bearer <key> header.
+# These map to API_KEY_1 / API_KEY_2 / API_KEY_3 environment variables.
+# Leave all three empty to disable inbound API-key auth.
+# Example:
+# api-key-1: "sk-proxy-1"
+# api-key-2: "sk-proxy-2"
+# api-key-3: "sk-proxy-3"
+api-key-1: "test"
+api-key-2: "dummy"
+api-key-3: "a"
+
+# Server port
+port: 8089
+
+# Number of uvicorn workers
+workers: 4
+
+# Log level: debug, info, warning, error, critical
+log-level: "info"
+
+# Enable debug mode: forces workers=1, log-level=debug, enables full tracebacks
+debug: false
+
+# Perplexity session cookies (JSON string or map)
+# Recommended when using Perplexity web auth:
+# perplexity-cookies:
+#   "next-auth.csrf-token": "your-csrf-token"
+#   "next-auth.session-token": "your-session-token"
+perplexity-cookies:
+  "next-auth.csrf-token": "d5c7e5229a5aaa0ff8c7666e843b15928676ea395d77d74fd1e3cd0d9db0b85b%7C87f5f112bfe21b2f4659b5533c9dbb4505972cef554c945aba083d54087bf351"
+  "next-auth.session-token": "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..f_WQVQ46KbpjWflo.9hjoIc3Pz9EZ2CGChI9i4Ys9HUz3YEDJiSl0MMiZjutLdY7pBwcRWU3kRjGfQEEOungaUmlv4V7TMOQUCcHISnnyleLp5x9ME9YC4fmvWlB5gw-n3DScPWEdXuFjGUIDXrmhrjPw_2y1-hI9NNFJWdOMKzGWNZXyUqe3gqNTBS5QJCjF6eu2O1POf4iLbXVg9KpehpOIN6sO8Hdej59q8k15k8uLKQQQ_Pqf8Zq1djPnIuMhfMmtagHpYa8DjuvlZQgzOa_RsnWJ5-1CXPT5zNVsQM27MnjkXdwuKEqL0SYiAZo-z22Mco7Cv0uuHt7oQW1HtN5NRY-BARgqIzZkMLt5sBd0DQ1oNMsLFN6FA0VLv7uStI0O2R_B5SglNZpX4nxCMGrE7Ei9-ObIZcoI2iFv-yxdBWEgbIKcoHnzh01gqPT-ok8.ehmcWzimSqITxXCZZPfkbw"
+
+# Response cache settings
+cache:
+  enabled: true
+  max-size: 256
+  ttl-seconds: 300
+
+# Model refresh secret (Authorization: Bearer <value> for POST /v1/models/refresh)
+# Leave empty to disable the refresh endpoint.
+refresh-secret: ""

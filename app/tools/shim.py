@@ -15,6 +15,7 @@ class Agent(str, Enum):
     HERMES = "hermes"
     GENERIC = "generic"
 
+PI_TOOL_NAMES = frozenset({"read", "edit", "bash", "ls"})
 ROO_TOOL_NAMES = frozenset(
     {
         "attempt_completion",
@@ -27,8 +28,18 @@ ROO_TOOL_NAMES = frozenset(
         "execute_command",
         "browser_action",
         "use_mcp_tool",
+        "read",
+        "edit",
+        "bash",
+        "ls",
     }
 )
+
+READ_TOOL_NAMES = frozenset({"read_file", "read"})
+WRITE_TOOL_NAMES = frozenset({"write_to_file", "edit"})
+EXECUTE_TOOL_NAMES = frozenset({"execute_command", "bash"})
+LIST_TOOL_NAMES = frozenset({"list_files", "ls"})
+COMPLETE_TOOL_NAMES = frozenset({"attempt_completion"})
 
 HERMES_TOOL_NAMES = frozenset(
     {
@@ -109,6 +120,8 @@ def detect_agent(tools: list | None, user_agent: str = "") -> Agent:
     if not names:
         return Agent.GENERIC
 
+    if names & PI_TOOL_NAMES:
+        return Agent.ROO
     if names & HERMES_TOOL_NAMES:
         return Agent.HERMES
     if any(name.startswith("browser_") and name != "browser_action" for name in names):
@@ -169,7 +182,7 @@ def _has_injected_file_content(messages: list) -> tuple[bool, str]:
             text = block.get("text", "")
             if not isinstance(text, str):
                 continue
-            match = re.search(r"\[read_file for ['\"]([^'\"]+)['\"]\]", text)
+            match = re.search(r"\[read(?:_file)? for ['\"]([^'\"]+)['\"]\]", text)
             if match:
                 return True, match.group(1)
         break
@@ -188,7 +201,7 @@ def _injected_file_block(messages: list | None) -> str | None:
             if not isinstance(block, dict) or block.get("type") != "text":
                 continue
             text = block.get("text", "")
-            if isinstance(text, str) and re.search(r"\[read_file for ['\"][^'\"]+['\"]\]", text):
+            if isinstance(text, str) and re.search(r"\[read(?:_file)? for ['\"][^'\"]+['\"]\]", text):
                 return text
         break
     return None
@@ -213,7 +226,7 @@ def _task_text(messages: list, user_query: str) -> str:
             else:
                 cleaned = text.strip()
                 noise_prefixes = (
-                    "[read_file for ",
+                    "[read(?:_file)? for ",
                     "Command executed in terminal",
                     '{"path":"',
                     '{"path": "',
@@ -326,10 +339,33 @@ def _read_files(messages: list) -> list[str]:
                 text = block.get("text", "")
                 if not isinstance(text, str):
                     continue
-                match = re.search(r"\[read_file for ['\"]([^'\"]+)['\"]\]", text)
+                match = re.search(r"\[read(?:_file)? for ['\"]([^'\"]+)['\"]\]", text)
                 if match and match.group(1) not in paths:
                     paths.append(match.group(1))
     return paths
+
+
+def _command_from_request_text(text: str) -> str | None:
+    lowered = text.strip().lower()
+    if not lowered:
+        return None
+
+    explicit_match = re.search(r"(?i)^(?:can|could|would)\s+you\s+(?:please\s+)?(?:run\s+command|run|execute)\s+(.+)$", text.strip())
+    if explicit_match:
+        return _normalize_tool_target(_cut_after_instruction_noise(explicit_match.group(1)))
+
+    direct_match = re.search(r"(?i)^(?:please\s+)?(?:run\s+command|run|execute)\s+(.+)$", text.strip())
+    if direct_match:
+        return _normalize_tool_target(_cut_after_instruction_noise(direct_match.group(1)))
+
+    soft_match = re.search(r"(?i)^(?:can|could|would)\s+you\s+(.+)$", text.strip())
+    if soft_match:
+        candidate = _normalize_tool_target(_cut_after_instruction_noise(soft_match.group(1)))
+        if candidate:
+            tokens = candidate.split()
+            if 1 <= len(tokens) <= 3 and not re.search(r"(?i)\b(what|current|directory|file|files|help|hello|thanks)\b", candidate):
+                return candidate
+    return None
 
 
 def _requested_commands(text: str) -> list[str]:
@@ -338,6 +374,10 @@ def _requested_commands(text: str) -> list[str]:
         command = match.group(1).strip()
         if command and command not in commands:
             commands.append(command)
+
+    inferred = _command_from_request_text(text)
+    if inferred and inferred not in commands:
+        commands.append(inferred)
     return commands
 
 
@@ -348,7 +388,7 @@ def _assistant_completion_results(messages: list) -> list[str]:
             continue
         for tool_call in msg.get("tool_calls") or []:
             fn = tool_call.get("function", {})
-            if not isinstance(fn, dict) or fn.get("name") != "attempt_completion":
+            if not isinstance(fn, dict) or fn.get("name") not in COMPLETE_TOOL_NAMES:
                 continue
             try:
                 args = json.loads(fn.get("arguments", "{}"))
@@ -367,7 +407,7 @@ def _executed_commands(messages: list) -> list[str]:
             continue
         for tool_call in msg.get("tool_calls") or []:
             fn = tool_call.get("function", {})
-            if not isinstance(fn, dict) or fn.get("name") != "execute_command":
+            if not isinstance(fn, dict) or fn.get("name") not in EXECUTE_TOOL_NAMES:
                 continue
             try:
                 args = json.loads(fn.get("arguments", "{}"))
@@ -419,7 +459,7 @@ def _default_test_command(task_text: str, messages: list) -> str | None:
             continue
         for tool_call in msg.get("tool_calls") or []:
             fn = tool_call.get("function", {})
-            if not isinstance(fn, dict) or fn.get("name") != "execute_command":
+            if not isinstance(fn, dict) or fn.get("name") not in EXECUTE_TOOL_NAMES:
                 continue
             try:
                 args = json.loads(fn.get("arguments", "{}"))
@@ -506,6 +546,13 @@ def _tool_name_set(tools: list | None) -> set[str]:
     return names
 
 
+def _tool_style(tools: list | None) -> str:
+    names = _tool_name_set(tools)
+    if names & PI_TOOL_NAMES:
+        return "pi"
+    return "roo"
+
+
 def detect_phase(messages: list, user_query: str, tools: list | None = None) -> tuple[Phase, dict[str, Any]]:
     task_text = _task_text(messages, user_query)
     last = _last_tool_call(messages)
@@ -519,17 +566,21 @@ def detect_phase(messages: list, user_query: str, tools: list | None = None) -> 
     executed_commands = set(_executed_commands(messages))
     next_command = next((command for command in planned_commands if command not in executed_commands), None)
     tool_names = _tool_name_set(tools)
-    can_execute = not tools or "execute_command" in tool_names
+    can_execute = not tools or bool(tool_names & EXECUTE_TOOL_NAMES)
+
+    direct_command = _command_from_request_text(task_text)
+    if can_execute and direct_command:
+        return Phase.TESTING, {"command": direct_command, "query": task_text or user_query}
 
     if can_execute and _is_testing_request(user_query) and not (
-        last and last[0] == "execute_command" and _has_test_failure(last_output)
+        last and last[0] in EXECUTE_TOOL_NAMES and _has_test_failure(last_output)
     ):
         command = next_command or _default_test_command(task_text, messages)
         if command:
             return Phase.TESTING, {"command": command, "query": task_text or user_query}
 
     if has_injected:
-        phase = Phase.FIXING if last and last[0] == "execute_command" and _has_test_failure(last_output) else Phase.GENERATING
+        phase = Phase.FIXING if last and last[0] in EXECUTE_TOOL_NAMES and _has_test_failure(last_output) else Phase.GENERATING
         return phase, {
             "file": injected_path,
             "current_content": injected_block,
@@ -541,7 +592,7 @@ def detect_phase(messages: list, user_query: str, tools: list | None = None) -> 
     if last is None:
         return Phase.PLANNING, {"query": task_text or user_query}
 
-    if last[0] == "read_file":
+    if last[0] in READ_TOOL_NAMES:
         return Phase.GENERATING, {
             "file": last[1].get("path", ""),
             "current_content": last_output,
@@ -549,7 +600,7 @@ def detect_phase(messages: list, user_query: str, tools: list | None = None) -> 
             "action": "write_to_file",
         }
 
-    if last[0] == "write_to_file":
+    if last[0] in WRITE_TOOL_NAMES:
         pending_files = [path for path in mentioned_files if path not in written_files and path not in read_files]
         if pending_files:
             return Phase.GENERATING, {"path": pending_files[0], "query": task_text or user_query, "action": "read_file"}
@@ -560,7 +611,7 @@ def detect_phase(messages: list, user_query: str, tools: list | None = None) -> 
             "output": last_output,
         }
 
-    if last[0] == "execute_command":
+    if last[0] in EXECUTE_TOOL_NAMES:
         if _has_test_failure(last_output):
             if _is_fix_request(user_query):
                 failing_file = _failing_file_from_output(last_output)
@@ -762,24 +813,75 @@ def wrap_as_tool_response(
 ) -> dict[str, Any]:
     tool_name = decision["tool"]
     args_hint = decision.get("args_hint", {})
+    tool_style = decision.get("tool_style", "roo")
+    phase_context = decision.get("phase_context", {})
+    current_content = ""
+    if isinstance(phase_context, dict):
+        current_content = str(phase_context.get("current_content", "") or "")
 
-    if tool_name == "write_to_file":
+    def plain_response(text: str) -> dict[str, Any]:
+        return {
+            "id": req_id,
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": text},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+
+    if tool_style == "pi":
         content = (prose or "").strip("\n")
-        if not content.strip():
-            tool_name = "attempt_completion"
-            arguments = {"result": "Cannot write empty content."}
-        else:
+        if tool_name in WRITE_TOOL_NAMES:
+            if not content.strip() or not current_content:
+                return plain_response(content or "Ready.")
+            tool_name = "edit"
             arguments = {
                 "path": args_hint.get("path", ""),
-                "content": content,
-                "line_count": len(content.splitlines()),
+                "edits": [{"oldText": current_content, "newText": content}],
             }
-    elif tool_name == "read_file":
-        arguments = {"path": args_hint.get("path", "")}
-    elif tool_name == "execute_command":
-        arguments = {"command": args_hint.get("command", "")}
+        elif tool_name in READ_TOOL_NAMES:
+            tool_name = "read"
+            arguments = {"path": args_hint.get("path", "")}
+        elif tool_name in EXECUTE_TOOL_NAMES:
+            tool_name = "bash"
+            arguments = {"command": args_hint.get("command", "")}
+        elif tool_name in LIST_TOOL_NAMES:
+            tool_name = "ls"
+            arguments = {"path": args_hint.get("path", "")}
+        elif tool_name == "search_files":
+            tool_name = "bash"
+            pattern = args_hint.get("pattern", "")
+            arguments = {"command": f"rg -n --hidden --glob '!.git' -- {json.dumps(pattern)} ." if pattern else "rg -n --hidden --glob '!.git' ."}
+        else:
+            return plain_response(content or "Ready.")
     else:
-        arguments = {"result": prose or "Ready."}
+        if tool_name == "write_to_file":
+            content = (prose or "").strip("\n")
+            if not content.strip():
+                tool_name = "attempt_completion"
+                arguments = {"result": "Cannot write empty content."}
+            else:
+                arguments = {
+                    "path": args_hint.get("path", ""),
+                    "content": content,
+                    "line_count": len(content.splitlines()),
+                }
+        elif tool_name == "read_file":
+            arguments = {"path": args_hint.get("path", "")}
+        elif tool_name == "execute_command":
+            arguments = {"command": args_hint.get("command", "")}
+        elif tool_name == "list_files":
+            arguments = {"path": args_hint.get("path", "")}
+        elif tool_name == "search_files":
+            arguments = {"pattern": args_hint.get("pattern", "")}
+        else:
+            arguments = {"result": prose or "Ready."}
 
     tool_call = {
         "id": f"call_{uuid.uuid4().hex[:24]}",
@@ -857,7 +959,7 @@ def _clean_user_block_text(text: str) -> str:
     text = re.sub(r"</?user_message>", "", text)
     text = text.strip()
     noise_prefixes = (
-        "[read_file for ",
+        "[read(?:_file)? for ",
         "Command executed in terminal",
         '{"path":"',
         '{"path": "',
@@ -882,7 +984,7 @@ def extract_task_history(messages: list, limit: int = 5) -> str:
             raw_text = block.get("text", "")
             if not isinstance(raw_text, str) or not raw_text:
                 continue
-            if re.search(r"\[read_file for ['\"][^'\"]+['\"]\]", raw_text):
+            if re.search(r"\[read(?:_file)? for ['\"][^'\"]+['\"]\]", raw_text):
                 turn_parts.append(raw_text.strip())
                 continue
             cleaned = _clean_user_block_text(raw_text)
@@ -919,7 +1021,7 @@ def extract_read_files(messages: list) -> list[str]:
                 raw_text = block.get("text", "")
                 if not isinstance(raw_text, str):
                     continue
-                match = re.search(r"\[read_file for ['\"]([^'\"]+)['\"]\]", raw_text)
+                match = re.search(r"\[read(?:_file)? for ['\"]([^'\"]+)['\"]\]", raw_text)
                 if match and match.group(1) not in paths:
                     paths.append(match.group(1))
     return paths
@@ -948,17 +1050,21 @@ def detect_coding_phase(messages: list, user_query: str, tools: list | None = No
     executed_commands = set(extract_executed_commands(messages))
     next_command = next((command for command in planned_commands if command not in executed_commands), None)
     tool_names = _tool_name_set(tools)
-    can_execute = not tools or "execute_command" in tool_names
+    can_execute = not tools or bool(tool_names & EXECUTE_TOOL_NAMES)
+
+    direct_command = _command_from_request_text(task_history or user_query)
 
     if not last:
+        if can_execute and direct_command:
+            return CodingPhase.TESTING
         return CodingPhase.PLANNING
-    if last[0] == "read_file":
+    if last[0] in READ_TOOL_NAMES:
         return CodingPhase.FILE_EDIT
-    if last[0] == "write_to_file":
+    if last[0] in WRITE_TOOL_NAMES:
         if can_execute and next_command:
             return CodingPhase.TESTING
         return CodingPhase.COMPLETE
-    if last[0] == "execute_command":
+    if last[0] in EXECUTE_TOOL_NAMES:
         if _has_test_failure(last_output):
             return CodingPhase.FIXING
         if can_execute and next_command:
@@ -1027,16 +1133,17 @@ def coding_shim(
             "response_wrapper": "generic",
         }
     if agent == Agent.HERMES:
-        prompt = build_hermes_prompt(user_query, system_message)
+        prompt = build_conversational_prompt(user_query, messages=messages, system_message=system_message)
         return {
             "agent": agent,
             "phase": CodingPhase.PLANNING,
             "task_history": task_history,
             "perplexity_prompt": prompt,
-            "response_wrapper": "hermes_terminal",
+            "response_wrapper": "hermes_conversational",
         }
 
     phase = detect_coding_phase(messages, user_query, tools=tools)
+    tool_style = _tool_style(tools)
     context: dict[str, Any] = {
         "query": user_query,
         "task_history": task_history,
@@ -1045,9 +1152,10 @@ def coding_shim(
         "test_output": _last_tool_result_text(messages),
     }
     last = _last_tool_call(messages)
-    if last and last[0] == "read_file":
+    if last and last[0] in READ_TOOL_NAMES:
         context["current_file"] = {"path": last[1].get("path", ""), "content": _last_tool_result_text(messages)}
     decision = decide_tool(messages, user_query, tools=tools)
+    decision["tool_style"] = tool_style
     prompt = build_perplexity_instruction(decision, user_query, messages=messages) or build_full_context_prompt(phase, context, system_message)
     return {
         "agent": agent,
@@ -1058,6 +1166,153 @@ def coding_shim(
         "response_wrapper": "roo_tool",
         "tool_name": decision.get("tool"),
         "tool_args": decision.get("args_hint", {}),
+        "tool_style": tool_style,
         "decision": decision,
         "context": context,
+    }
+
+
+
+def build_conversational_prompt(
+    user_query: str,
+    messages: list | None = None,
+    system_message: str | None = None,
+) -> str:
+    task_history = extract_task_history(messages or []) if messages else ""
+    parts = [
+        "You are a conversational coding partner working inside Pi coding agent harness.",
+        "Your job is to tell the proxy the next single tool action needed.",
+        "Use short, direct language and keep the conversation stateful.",
+        "Respond with exactly one instruction for the next step.",
+        "",
+        "Use the Pi tools directly when possible: read, edit, ls, and bash.",
+        "Allowed tool request formats:",
+        "- I need to see [filename]. Please read [filename]",
+        "- I should update [filename]. Here's the updated [filename]:",
+        "  [complete file content]",
+        "- I should run [exact command]. Please execute [exact command]",
+        "- I need to list files in [path]. Please list files in [path]",
+        "- I need to search for [pattern]. Please search for [pattern]",
+        "- Looks good! All done.",
+    ]
+    if system_message:
+        parts.append(f"Project context:\n{system_message}")
+    if task_history:
+        parts.append(f"Current conversation:\n{task_history}")
+    parts.append(f"Latest user request:\n{user_query}")
+    parts.append("Your turn — what should I do next?")
+    return "\n\n".join(parts)
+
+
+def _normalize_tool_target(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().strip("`'\"")
+    cleaned = cleaned.rstrip(" .,;:!?")
+    return cleaned or None
+
+
+def _cut_after_instruction_noise(value: str) -> str:
+    cut_markers = (
+        "\n",
+        " please ",
+        " Please ",
+        " i need ",
+        " I need ",
+        " i should ",
+        " I should ",
+        " let's ",
+        " Let’s ",
+        " lets ",
+        " Let\'s ",
+        " all done",
+        " All done",
+        " looks good",
+        " Looks good",
+        " then ",
+        " Then ",
+    )
+    lowered = value.lower()
+    positions = [value.find(marker) for marker in cut_markers if value.find(marker) > 0]
+    if positions:
+        return value[: min(positions)]
+    # sentence break heuristic: stop before a period followed by a new instruction-like clause
+    sentence_break = re.search(r"\.(?=\s+(?:Please|I need|I should|Let's|Let’s|All done|Looks good|Then|then)\b)", value)
+    if sentence_break:
+        return value[: sentence_break.start()]
+    return value
+
+
+def parse_tool_request(prose: str) -> tuple[str, str | None]:
+    text = (prose or "").strip()
+    if not text:
+        return "attempt_completion", None
+
+    if re.search(r"(?i)\b(looks good|all done|task complete|done)\b", text):
+        return "attempt_completion", None
+
+    write_match = re.search(
+        r"(?is)^(?:here(?:'|’)s(?: the updated)?|updated)\s+(.+?)(?:[:\n])\s*(.*)$",
+        text,
+    )
+    if write_match:
+        filename = _normalize_tool_target(_cut_after_instruction_noise(write_match.group(1)))
+        return "write_to_file", filename
+
+    read_match = re.search(r"(?i)\b(?:please\s+)?(?:read|open|inspect|view)\s+(.+)", text)
+    if read_match:
+        return "read_file", _normalize_tool_target(_cut_after_instruction_noise(read_match.group(1)))
+
+    list_match = re.search(r"(?i)\b(?:please\s+)?list files(?:\s+(?:in|under|at))?\s+(.+)", text)
+    if list_match:
+        return "list_files", _normalize_tool_target(_cut_after_instruction_noise(list_match.group(1)))
+
+    search_match = re.search(r"(?i)\b(?:please\s+)?search for\s+(.+)", text)
+    if search_match:
+        return "search_files", _normalize_tool_target(_cut_after_instruction_noise(search_match.group(1)))
+
+    exec_match = re.search(r"(?i)\b(?:please\s+)?(?:run\s+command|run|execute)\s+(.+)", text)
+    if exec_match:
+        return "execute_command", _normalize_tool_target(_cut_after_instruction_noise(exec_match.group(1)))
+
+    inferred_command = _command_from_request_text(text)
+    if inferred_command:
+        return "execute_command", inferred_command
+
+    return "attempt_completion", None
+
+
+def normalize_tool_request_text(tool_name: str, prose: str, tool_arg: str | None = None) -> str:
+    text = (prose or "").strip()
+    if tool_name not in WRITE_TOOL_NAMES:
+        return text
+
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    if lines:
+        first_line = lines[0].strip()
+        if re.match(r"(?i)^(here(?:'|’)s|updated)\b", first_line):
+            text = "\n".join(lines[1:]).lstrip("\n")
+
+    text = re.sub(r"^```[a-zA-Z0-9_+-]*\s*\n?", "", text)
+    text = re.sub(r"\n?```$", "", text)
+    return text.strip() or (prose or "").strip()
+
+
+def build_conversational_tool_decision(tool_name: str, tool_arg: str | None) -> dict[str, Any]:
+    args_hint: dict[str, Any] = {}
+    if tool_name in {"read_file", "read", "write_to_file", "edit", "list_files", "ls"} and tool_arg:
+        args_hint["path"] = tool_arg
+    elif tool_name == "search_files" and tool_arg:
+        args_hint["pattern"] = tool_arg
+    elif tool_name in {"execute_command", "bash"} and tool_arg:
+        args_hint["command"] = tool_arg
+
+    return {
+        "tool": tool_name,
+        "args_hint": args_hint,
+        "phase": CodingPhase.PLANNING.value,
+        "phase_context": {"tool_arg": tool_arg},
     }
